@@ -101,6 +101,10 @@ struct GenericEventPattern : EventPattern {
       });
   }
 
+  [[nodiscard]] std::string dump() const {
+    return std::format("{}{}", Derived::getPrefix(), maxQuantity.value);
+  }
+
   GenericEventPattern() = default;
   explicit GenericEventPattern(const UnsignedNumberPattern pattern) : maxQuantity(pattern) {
   }
@@ -112,10 +116,6 @@ struct QuotePattern : GenericEventPattern<QuotePattern> {
   static char getPrefix() {
     return 'Q';
   }
-
-  [[nodiscard]] std::string dump() const {
-    return "Q" + std::to_string(maxQuantity.value);
-  }
 };
 
 struct TradePattern : GenericEventPattern<TradePattern> {
@@ -124,10 +124,6 @@ struct TradePattern : GenericEventPattern<TradePattern> {
   static char getPrefix() {
     return 'T';
   }
-
-  [[nodiscard]] std::string dump() const {
-    return "T" + std::to_string(maxQuantity.value);
-  }
 };
 
 struct SummaryPattern : GenericEventPattern<SummaryPattern> {
@@ -135,10 +131,6 @@ struct SummaryPattern : GenericEventPattern<SummaryPattern> {
 
   static char getPrefix() {
     return 'S';
-  }
-
-  [[nodiscard]] std::string dump() const {
-    return "S" + std::to_string(maxQuantity.value);
   }
 };
 
