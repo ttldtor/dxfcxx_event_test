@@ -1,6 +1,8 @@
 #include <dxfeed_graal_cpp_api/api.hpp>
 #include <expected>
 #include <iostream>
+#include <string_view>
+#include <variant>
 
 using u64 = std::uint64_t;
 using u32 = std::uint32_t;
@@ -12,100 +14,167 @@ using i16 = std::int16_t;
 using i8 = std::int8_t;
 
 namespace patterns {
-enum class ParseError { UNKNOWN_PATTERN };
+enum class ParseErrorEnum { UNKNOWN_PATTERN, POSITION_OUT_OF_RANGE, QUANTITY_MUST_BE_GREATER_THAN_ZERO };
 
-struct Text {
-  std::string value;
+template <typename Pattern>
+struct ParseResult {
+  Pattern pattern{};
+  u64 nextPosition{};
+};
 
-  static std::expected<Text, ParseError> parse(std::string_view) {
-    return std::unexpected(ParseError::UNKNOWN_PATTERN);
+struct ParseError {
+  ParseErrorEnum error{};
+  u64 position{};
+};
+
+struct EmptyPattern {};
+
+template <typename Pattern>
+using ParseExpected = std::expected<ParseResult<Pattern>, ParseError>;
+
+struct UnsignedNumberPattern {
+  u64 value{};
+
+  static ParseExpected<UnsignedNumberPattern> parse(std::string_view text, u64 currentPosition) {
+    if (currentPosition > text.size()) {
+      return std::unexpected(ParseError{ParseErrorEnum::POSITION_OUT_OF_RANGE, currentPosition});
+    }
+
+    u64 value{};
+    const auto [ptr, ec] = std::from_chars(text.data() + currentPosition, text.data() + text.size(), value);
+
+    if (ec != std::errc()) {
+      return std::unexpected(ParseError{ParseErrorEnum::UNKNOWN_PATTERN, currentPosition});
+    }
+
+    return ParseResult<UnsignedNumberPattern>{.pattern = {value}, .nextPosition = static_cast<u64>(ptr - text.data())};
   }
 };
 
-// @@N{0..999} -> 0, 1, 2 ... 999
-// @@N{0..999,2} -> 0, 2, 4 ... 998
-// @@N{0..999,-2} -> UNKNOWN_PATTERN
-// @@N{000..999} -> 000, 001, 002 ... 999
-// @@N{000..999,3} -> 000, 003, 006 ... 999
-struct NumberPattern {
-  i64 min;
-  i64 max;
-  i64 step;
-  i64 digits;  // 0 - dynamic
+struct EventPattern {
+  static std::expected<ParseResult<EmptyPattern>, ParseError> parsePrefixChar(std::string_view text,
+                                                                              u64 currentPosition, char prefixChar) {
+    if (currentPosition > text.size()) {
+      return std::unexpected(ParseError{ParseErrorEnum::POSITION_OUT_OF_RANGE, currentPosition});
+    }
 
-  static std::expected<NumberPattern, ParseError> parse(std::string_view text) {
-    return std::unexpected(ParseError::UNKNOWN_PATTERN);
+    if (text[currentPosition] != prefixChar) {
+      return std::unexpected(ParseError{ParseErrorEnum::UNKNOWN_PATTERN, currentPosition});
+    }
+
+    return ParseResult<EmptyPattern>{{}, currentPosition + 1};
+  }
+
+  static std::expected<ParseResult<UnsignedNumberPattern>, ParseError> parseMaxQuantity(std::string_view text,
+                                                                                        u64 currentPosition) {
+    return UnsignedNumberPattern::parse(text, currentPosition)
+      .and_then([](const ParseResult<UnsignedNumberPattern>& r) -> ParseExpected<UnsignedNumberPattern> {
+        if (r.pattern.value == 0) {
+          return std::unexpected(ParseError{ParseErrorEnum::QUANTITY_MUST_BE_GREATER_THAN_ZERO, r.nextPosition});
+        }
+        return r;
+      });
   }
 };
 
-struct SymbolNamePattern {
-  using Part = std::variant<Text, NumberPattern>;
+template <typename Derived>
+struct GenericEventPattern : EventPattern {
+  UnsignedNumberPattern maxQuantity{};
 
-  std::vector<Part> parts;
+  static ParseExpected<Derived> parse(std::string_view text, u64 currentPosition) {
+    return parsePrefixChar(text, currentPosition, Derived::getPrefix())
+      .and_then([&](const ParseResult<EmptyPattern>& prefixResult) {
+        return parseMaxQuantity(text, prefixResult.nextPosition);
+      })
+      .transform([](const ParseResult<UnsignedNumberPattern>& qty) {
+        return ParseResult<Derived>{Derived{qty.pattern}, qty.nextPosition};
+      });
+  }
 
-  static std::expected<SymbolNamePattern, ParseError> parse(std::string_view text) {
-    return std::unexpected(ParseError::UNKNOWN_PATTERN);
+  GenericEventPattern() = default;
+  explicit GenericEventPattern(const UnsignedNumberPattern pattern) : maxQuantity(pattern) {}
+};
+
+struct QuotePattern : GenericEventPattern<QuotePattern> {
+  using GenericEventPattern::GenericEventPattern;
+
+  static char getPrefix() {
+    return 'Q';
   }
 };
 
-struct QuotePattern {
-  static std::expected<QuotePattern, ParseError> parse(std::string_view text) {
-    return std::unexpected(ParseError::UNKNOWN_PATTERN);
+struct TradePattern : GenericEventPattern<TradePattern> {
+  using GenericEventPattern::GenericEventPattern;
+
+  static char getPrefix() {
+    return 'T';
   }
 };
 
-struct TradePattern {
-  static std::expected<TradePattern, ParseError> parse(std::string_view text) {
-    return std::unexpected(ParseError::UNKNOWN_PATTERN);
+struct SummaryPattern : GenericEventPattern<SummaryPattern> {
+  using GenericEventPattern::GenericEventPattern;
+
+  static char getPrefix() {
+    return 'S';
   }
 };
 
-struct SummaryPattern {
-  static std::expected<SummaryPattern, ParseError> parse(std::string_view text) {
-    return std::unexpected(ParseError::UNKNOWN_PATTERN);
-  }
-};
+using EventPatternVariant = std::variant<QuotePattern, TradePattern, SummaryPattern>;
 
-struct SubscriptionPattern {
-  using EventPattern = std::variant<QuotePattern, TradePattern, SummaryPattern>;
+template <typename Variant>
+static std::expected<ParseResult<Variant>, ParseError> parseVariant(std::string_view text, u64 currentPosition) {
+  std::optional<Variant> result;
 
-  SymbolNamePattern symbolNamePattern;
-  std::vector<EventPattern> eventPatterns;
+  [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+    (... || [&] -> bool {
+      using T = std::variant_alternative_t<Is, Variant>;
 
-  static std::expected<SubscriptionPattern, ParseError> parse(std::string_view text) {
-    const auto parts = dxfcpp::splitStr(text, ';');
+      if (auto r = T::parse(text, currentPosition)) {
+        result.emplace(*r);
 
-    if (parts.size() == 3 && parts[0] == "SUB") {
-      auto r = SymbolNamePattern::parse(parts[1]);
-
-      if (!r) {
-        return std::unexpected(r.error());
+        return true;
       }
 
-      const auto eventPatternParts = dxfcpp::splitStr(parts[2], ',');
+      return false;
+    }());
+  }(std::make_index_sequence<std::variant_size_v<Variant>>{});
+
+  if (result) {
+    return *result;
+  }
+
+  return std::unexpected(ParseError{ParseErrorEnum::UNKNOWN_PATTERN, currentPosition});
+}
+
+struct SubscriptionPattern {
+  std::vector<EventPattern> eventPatterns;
+
+  static std::expected<SubscriptionPattern, ParseError> parse(std::string_view text, u64 currentPosition) {
+    const auto& parts = dxfcpp::splitStr(text, ':');
+
+    if (parts.size() == 2 && parts[0] == "SUB") {
+      const auto eventPatternParts = dxfcpp::splitStr(parts[1], ';');
 
       if (eventPatternParts.empty()) {
-        return std::unexpected(ParseError::UNKNOWN_PATTERN);
+        return std::unexpected(ParseError{ParseErrorEnum::UNKNOWN_PATTERN, currentPosition});
       }
 
       std::vector<EventPattern> eventPatterns{};
 
-      for (auto& eventPattern : eventPatternParts) {
-        if (auto r = QuotePattern::parse(eventPattern); r.has_value()) {
-          eventPatterns.emplace_back(*r);
-        } else if (auto r = TradePattern::parse(eventPattern); r.has_value()) {
-          eventPatterns.emplace_back(*r);
-        } else if (auto r = SummaryPattern::parse(eventPattern); r.has_value()) {
-          eventPatterns.emplace_back(*r);
-        } else {
-          return std::unexpected(ParseError::UNKNOWN_PATTERN);
+      for (auto& part : eventPatternParts) {
+        auto result = parseVariant<EventPatternVariant>(part);
+
+        if (!result) {
+          return std::unexpected(result.error());
         }
+
+        eventPatterns.emplace_back(*result);
       }
 
       return SubscriptionPattern{std::move(*r), std::move(eventPatterns)};
     }
 
-    return std::unexpected(ParseError::UNKNOWN_PATTERN);
+    return std::unexpected(ParseError{ParseErrorEnum::UNKNOWN_PATTERN, currentPosition});
   }
 };
 }  // namespace patterns
@@ -121,7 +190,7 @@ int main() {
     const auto endpoint = DXEndpoint::newBuilder()->withRole(DXEndpoint::Role::PUBLISHER)->withName("PUB")->build();
     const auto publisher = endpoint->getPublisher();
 
-    const auto sub = publisher->getSubscription(TextMessage::TYPE);
+    const auto sub = publisher->getSubscription(Quote::TYPE);
 
   } catch (const RuntimeException& e) {
     std::cerr << e << std::endl;
