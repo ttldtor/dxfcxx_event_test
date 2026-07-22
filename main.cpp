@@ -240,7 +240,11 @@ int main() {
     const auto endpoint = DXEndpoint::newBuilder()->withRole(DXEndpoint::Role::PUBLISHER)->withName("PUB")->build();
     const auto publisher = endpoint->getPublisher();
 
-    const auto sub = publisher->getSubscription(Quote::TYPE);
+    const auto sub = publisher->getSubscription(TextMessage::TYPE);
+
+    sub->addChangeListener(ObservableSubscriptionChangeListener::create([publisher](auto&& symbols) {
+      
+    }));
 
   } catch (const RuntimeException& e) {
     std::cerr << e << std::endl;
