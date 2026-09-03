@@ -52,7 +52,8 @@ class Generator {
         std::vector<std::shared_ptr<EventType>> events;
 
         events.reserve(pattern.eventCount() + 1);
-        for (const auto &symbol : pattern.symbols(latency::EventKind::Quote)) {
+
+        for (const auto &symbol : pattern.symbols(latency::EventKind::QUOTE)) {
             auto event = std::make_shared<Quote>(symbol);
             event->setBidExchangeCode('B');
             event->setAskExchangeCode('A');
@@ -61,13 +62,13 @@ class Generator {
             events.push_back(std::move(event));
         }
 
-        for (const auto &symbol : pattern.symbols(latency::EventKind::Trade)) {
+        for (const auto &symbol : pattern.symbols(latency::EventKind::TRADE)) {
             auto event = std::make_shared<Trade>(symbol);
             event->setSize(1);
             events.push_back(std::move(event));
         }
 
-        for (const auto &symbol : pattern.symbols(latency::EventKind::Summary)) {
+        for (const auto &symbol : pattern.symbols(latency::EventKind::SUMMARY)) {
             auto event = std::make_shared<Summary>(symbol);
             event->setDayId(1);
             events.push_back(std::move(event));
@@ -145,8 +146,10 @@ class Generator {
 
                 commands_.pop_front();
                 lock.unlock();
+
                 if (command.start) {
                     const auto parsed = latency::parseTask(command.text);
+
                     if (!parsed) {
                         std::cerr << "Rejected task at " << parsed.error().position << ": " << parsed.error().message
                                   << " [" << command.text << "]\n";
@@ -226,6 +229,7 @@ std::string addressFromArgs(int argc, char **argv) {
             std::cout << "Usage: latency_server [--address :7400]\n";
             std::exit(0);
         }
+
         if (arg == "--address" && i + 1 < argc) {
             address = argv[++i];
         } else {

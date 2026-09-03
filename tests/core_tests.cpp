@@ -20,12 +20,14 @@ int main() {
     using namespace latency;
     const auto parsed = parseTask("SUB:Q100;S1;T5");
     check(parsed.has_value(), "valid mixed task parses");
+
     if (parsed) {
         check(parsed->toString() == "SUB:Q100;S1;T5", "task round trip");
         check(parsed->eventCount() == 106, "total quantity");
-        const auto q = parsed->symbols(EventKind::Quote);
+        const auto q = parsed->symbols(EventKind::QUOTE);
         check(q.size() == 100 && q.front() == "Q00" && q.back() == "Q99", "Q100 symbols");
     }
+
     check(!parseTask("SUB:"), "empty task rejected");
     check(!parseTask("SUB:Q0"), "zero rejected");
     check(!parseTask("SUB:Q1;Q2"), "duplicate rejected");

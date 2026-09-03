@@ -18,11 +18,11 @@ std::size_t symbolWidth(std::size_t quantity) {
 std::optional<EventKind> parseKind(char value) {
     switch (value) {
     case 'Q':
-        return EventKind::Quote;
+        return EventKind::QUOTE;
     case 'T':
-        return EventKind::Trade;
+        return EventKind::TRADE;
     case 'S':
-        return EventKind::Summary;
+        return EventKind::SUMMARY;
     default:
         return std::nullopt;
     }
@@ -73,6 +73,7 @@ std::vector<std::string> TaskPattern::symbols(EventKind kind) const {
     std::vector<std::string> result;
 
     result.reserve(count);
+
     if (!count) {
         return result;
     }
@@ -87,13 +88,13 @@ std::vector<std::string> TaskPattern::symbols(EventKind kind) const {
 }
 
 std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
-    constexpr std::string_view prefix = "SUB:";
+    constexpr std::string_view PREFIX = "SUB:";
 
-    if (!text.starts_with(prefix)) {
+    if (!text.starts_with(PREFIX)) {
         return std::unexpected(ParseError{0, "expected SUB:"});
     }
 
-    std::size_t pos = prefix.size();
+    std::size_t pos = PREFIX.size();
 
     if (pos == text.size()) {
         return std::unexpected(ParseError{pos, "expected event pattern"});
@@ -161,11 +162,11 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
 
 std::string eventKindName(EventKind kind) {
     switch (kind) {
-    case EventKind::Quote:
+    case EventKind::QUOTE:
         return "Quote";
-    case EventKind::Trade:
+    case EventKind::TRADE:
         return "Trade";
-    case EventKind::Summary:
+    case EventKind::SUMMARY:
         return "Summary";
     }
 
@@ -197,6 +198,7 @@ Statistics calculateStatistics(const std::vector<std::int64_t> &values) {
     Statistics result;
 
     result.count = values.size();
+
     if (values.empty()) {
         return result;
     }

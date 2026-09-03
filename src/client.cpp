@@ -39,8 +39,10 @@ struct Config {
 
 Config parseArgs(int argc, char **argv) {
     Config config;
+
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
+
         if (arg == "--help") {
             std::cout << "Usage: latency_client [options]\n"
                          "  --address HOST:PORT       default 127.0.0.1:7400\n"
@@ -50,6 +52,7 @@ Config parseArgs(int argc, char **argv) {
                          "  --output PREFIX          default latency\n";
             std::exit(0);
         }
+
         if (i + 1 >= argc) {
             throw std::invalid_argument("missing value for " + arg);
         }
@@ -126,30 +129,31 @@ class Collector {
     // Extract the wire fields used to associate each supported event type with a published batch.
     static std::optional<Description> describe(const std::shared_ptr<EventType> &event) {
         if (auto value = event->sharedAs<Quote>()) {
-            return Description{latency::EventKind::Quote, value->getEventSymbol(),
+            return Description{latency::EventKind::QUOTE, value->getEventSymbol(),
                                value->getSequence() == 0 ? std::nullopt : std::optional{value->getSequence()},
                                value->getTimeNanos()};
         }
 
         if (auto value = event->sharedAs<Trade>()) {
-            return Description{latency::EventKind::Trade, value->getEventSymbol(), value->getSequence(),
+            return Description{latency::EventKind::TRADE, value->getEventSymbol(), value->getSequence(),
                                value->getTimeNanos()};
         }
 
         if (auto value = event->sharedAs<Summary>()) {
-            return Description{latency::EventKind::Summary, value->getEventSymbol(), value->getDayId(), std::nullopt};
+            return Description{latency::EventKind::SUMMARY, value->getEventSymbol(), value->getDayId(), std::nullopt};
         }
 
         return std::nullopt;
     }
 
     static std::optional<std::int64_t> markerTimestamp(std::string_view text) {
-        constexpr std::string_view prefix = "LATENCY_BATCH:";
-        if (!text.starts_with(prefix)) {
+        constexpr std::string_view PREFIX = "LATENCY_BATCH:";
+
+        if (!text.starts_with(PREFIX)) {
             return std::nullopt;
         }
 
-        text.remove_prefix(prefix.size());
+        text.remove_prefix(PREFIX.size());
         std::int64_t result{};
         const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), result);
 
@@ -171,24 +175,29 @@ class Collector {
         for (auto &event : batch.events) {
             const auto publishTime = *batch.timestamp;
             const auto delta = event.observed - publishTime;
+
             if (delta < 0) {
                 ++negativeWindow_;
                 ++negativeTotal_;
                 continue;
             }
+
             eventWindow_.push_back(
                 latency::Sample{event.observed, publishTime, delta, event.kind, std::move(event.symbol)});
             eventGlobal_.push_back(delta);
         }
+
         const auto batchDelta = batch.lastObserved - *batch.timestamp;
+
         if (batchDelta < 0) {
             ++negativeWindow_;
             ++negativeTotal_;
         } else {
             batchWindow_.push_back(
-                latency::Sample{batch.lastObserved, *batch.timestamp, batchDelta, latency::EventKind::Quote, {}});
+                latency::Sample{batch.lastObserved, *batch.timestamp, batchDelta, latency::EventKind::QUOTE, {}});
             batchGlobal_.push_back(batchDelta);
         }
+
         pending_.erase(it);
     }
 
@@ -245,9 +254,11 @@ class Collector {
 
         ++callbacksWindow_;
         ++callbacksTotal_;
+
         for (const auto &event : events) {
             if (const auto marker = event->sharedAs<TextMessage>(); marker) {
                 const auto timestamp = markerTimestamp(marker->getText());
+
                 if (!timestamp) {
                     continue;
                 }
@@ -280,6 +291,7 @@ class Collector {
 
                 continue;
             }
+
             const auto description = describe(event);
 
             if (!description) {
@@ -291,7 +303,7 @@ class Collector {
 
             if (description->sequence) {
                 addEvent(*description->sequence, std::move(pendingEvent));
-            } else if (description->kind == latency::EventKind::Quote && description->publishTime) {
+            } else if (description->kind == latency::EventKind::QUOTE && description->publishTime) {
                 // Quote sequence and fractional time are not preserved by the tested scheme. At one batch per second,
                 // the exchange-time second is an unambiguous synthetic correlation key.
                 const auto second = *description->publishTime / 1'000'000'000;
@@ -313,9 +325,11 @@ class Collector {
         // set is insufficient for a valid measurement.
         for (auto it = pending_.begin(); it != pending_.end();) {
             const auto reference = it->second.timestamp.value_or(it->second.firstObserved);
+
             if (expireAll || reference < cutoff) {
                 std::cerr << "Incomplete batch sequence=" << it->first << " received=" << it->second.received << '/'
                           << expectedPerBatch_ << " marker=" << (it->second.timestamp ? "yes" : "no");
+
                 if (!it->second.events.empty()) {
                     std::cerr << " first-event-time=" << it->second.events.front().publishTime.value_or(-1);
                 }
@@ -324,9 +338,11 @@ class Collector {
                 ++missingWindow_;
                 ++missingTotal_;
                 it = pending_.erase(it);
-            } else
+            } else {
                 ++it;
+            }
         }
+
         const auto cutoffSecond = cutoff / 1'000'000'000;
         std::erase_if(secondToSequence_, [&](const auto &item) {
             return item.first < cutoffSecond;
@@ -416,6 +432,7 @@ class Reporter {
         summaryPath += "-summary.csv";
         auto outliersPath = prefix;
         outliersPath += "-outliers.csv";
+
         if (summaryPath.has_parent_path()) {
             std::filesystem::create_directories(summaryPath.parent_path());
         }
@@ -515,9 +532,9 @@ int main(int argc, char **argv) {
             subscription->addSymbols(symbols);
             subscriptions.push_back(std::move(subscription));
         };
-        subscribe(Quote::TYPE, latency::EventKind::Quote);
-        subscribe(Trade::TYPE, latency::EventKind::Trade);
-        subscribe(Summary::TYPE, latency::EventKind::Summary);
+        subscribe(Quote::TYPE, latency::EventKind::QUOTE);
+        subscribe(Trade::TYPE, latency::EventKind::TRADE);
+        subscribe(Summary::TYPE, latency::EventKind::SUMMARY);
         auto control = feed->createSubscription(TextMessage::TYPE);
         control->addEventListener([&collector](const auto &events) {
             collector.handle(events);
@@ -526,6 +543,7 @@ int main(int argc, char **argv) {
         endpoint->connect(config.address);
         std::cout << "Connected to " << config.address << ", task " << config.task << ", expected " << expected
                   << " events/batch. Warm-up " << config.warmup.count() << " ms.\n";
+
         if (!waitFor(config.warmup)) {
             control->removeSymbols(config.task);
             endpoint->closeAndAwaitTermination();
@@ -538,6 +556,7 @@ int main(int argc, char **argv) {
         reporter.beginMeasurement(windowStartWall);
         auto nextWindow = measurementStart + config.window;
         const auto measurementEnd = measurementStart + config.duration;
+
         while (!interrupted.load() && std::chrono::steady_clock::now() < measurementEnd) {
             const auto target = std::min(nextWindow, measurementEnd);
             const auto remaining =

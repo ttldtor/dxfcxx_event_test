@@ -14,11 +14,11 @@ namespace latency {
 /** Identifies a supported market event type. */
 enum class EventKind : char {
     /** A Quote event. */
-    Quote = 'Q',
+    QUOTE = 'Q',
     /** A Trade event. */
-    Trade = 'T',
+    TRADE = 'T',
     /** A Summary event. */
-    Summary = 'S'
+    SUMMARY = 'S'
 };
 
 /** Describes one event type and its instrument count in a task pattern. */
@@ -106,7 +106,7 @@ struct Sample {
     /** Difference between observation and publication time. */
     std::int64_t latencyNs{};
     /** The observed event type. */
-    EventKind kind{EventKind::Quote};
+    EventKind kind{EventKind::QUOTE};
     /** The observed event symbol. */
     std::string symbol;
 };
