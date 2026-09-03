@@ -276,4 +276,40 @@ std::expected<std::chrono::milliseconds, std::string> parseDuration(std::string_
 
     return std::chrono::milliseconds{value * multiplier};
 }
+
+std::expected<std::optional<std::chrono::milliseconds>, std::string> parseMonitoringPeriod(std::string_view text) {
+    if (text == "0") {
+        return std::nullopt;
+    }
+
+    auto duration = parseDuration(text);
+
+    if (!duration) {
+        return std::unexpected(duration.error());
+    }
+
+    return *duration;
+}
+
+std::string monitoringPeriodPropertyValue(const std::optional<std::chrono::milliseconds> &period) {
+    if (!period) {
+        return "0";
+    }
+
+    const auto milliseconds = period->count();
+    const auto seconds = milliseconds / 1000;
+    const auto remainder = milliseconds % 1000;
+
+    if (remainder == 0) {
+        return std::to_string(seconds) + "s";
+    }
+
+    auto fraction = std::format("{:03}", remainder);
+
+    while (fraction.ends_with('0')) {
+        fraction.pop_back();
+    }
+
+    return std::to_string(seconds) + "." + fraction + "s";
+}
 } // namespace latency

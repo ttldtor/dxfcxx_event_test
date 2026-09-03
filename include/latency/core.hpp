@@ -203,4 +203,22 @@ std::string utcTimestamp(std::int64_t unixNanos);
  */
 std::expected<std::chrono::milliseconds, std::string> parseDuration(std::string_view text);
 
+/**
+ * Parses the reporting period used by QD monitoring.
+ *
+ * A positive value follows the same syntax as `parseDuration`. The literal `0` disables periodic monitoring.
+ *
+ * @param text The reporting period, for example `10s`, or `0` to disable reporting.
+ * @return A positive period, `std::nullopt` when disabled, or a human-readable error message.
+ */
+std::expected<std::optional<std::chrono::milliseconds>, std::string> parseMonitoringPeriod(std::string_view text);
+
+/**
+ * Formats a monitoring period using the fractional-second syntax accepted by QD `TimePeriod`.
+ *
+ * @param period A positive reporting period, or `std::nullopt` when reporting is disabled.
+ * @return A value such as `10s`, `0.5s`, or `0`.
+ */
+std::string monitoringPeriodPropertyValue(const std::optional<std::chrono::milliseconds> &period);
+
 } // namespace latency

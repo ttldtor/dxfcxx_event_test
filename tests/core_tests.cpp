@@ -38,6 +38,14 @@ int main() {
     check(parseDuration("10s") == std::chrono::seconds{10}, "seconds duration");
     check(parseDuration("2m") == std::chrono::minutes{2}, "minutes duration");
     check(!parseDuration("0s"), "zero duration rejected");
+    const auto monitoringPeriod = parseMonitoringPeriod("10s");
+    check(monitoringPeriod && *monitoringPeriod == std::chrono::seconds{10}, "monitoring period");
+    const auto disabledMonitoring = parseMonitoringPeriod("0");
+    check(disabledMonitoring && !*disabledMonitoring, "monitoring disabled");
+    check(!parseMonitoringPeriod("off"), "invalid monitoring period rejected");
+    check(monitoringPeriodPropertyValue(std::chrono::seconds{10}) == "10s", "whole monitoring seconds");
+    check(monitoringPeriodPropertyValue(std::chrono::milliseconds{1500}) == "1.5s", "fractional monitoring seconds");
+    check(monitoringPeriodPropertyValue(std::nullopt) == "0", "disabled monitoring property");
 
     const auto stats = calculateStatistics({1, 1, 2, 2, 100});
     check(stats.count == 5 && stats.p50 == 2 && stats.q1 == 1 && stats.q3 == 2, "percentiles");

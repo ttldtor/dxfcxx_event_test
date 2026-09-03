@@ -2,6 +2,7 @@
 
 #include <dxfeed_graal_cpp_api/api.hpp>
 
+#include <array>
 #include <atomic>
 #include <charconv>
 #include <chrono>
@@ -25,6 +26,35 @@ using namespace dxfcpp;
 namespace {
 std::atomic_bool interrupted{};
 
+constexpr std::array EVENT_KINDS{latency::EventKind::QUOTE, latency::EventKind::TRADE, latency::EventKind::SUMMARY};
+constexpr std::string_view MONITORING_STAT_PROPERTY = "monitoring.stat";
+
+std::size_t eventKindIndex(latency::EventKind kind) {
+    switch (kind) {
+    case latency::EventKind::QUOTE:
+        return 0;
+    case latency::EventKind::TRADE:
+        return 1;
+    case latency::EventKind::SUMMARY:
+        return 2;
+    }
+
+    throw std::invalid_argument("unknown event kind");
+}
+
+std::string_view eventSampleKind(latency::EventKind kind) {
+    switch (kind) {
+    case latency::EventKind::QUOTE:
+        return "event-quote";
+    case latency::EventKind::TRADE:
+        return "event-trade";
+    case latency::EventKind::SUMMARY:
+        return "event-summary";
+    }
+
+    return "event-unknown";
+}
+
 void onSignal(int) {
     interrupted.store(true);
 }
@@ -34,6 +64,7 @@ struct Config {
     std::string address{"127.0.0.1:7400"};
     std::string task{"SUB:Q100"};
     std::chrono::milliseconds warmup{30s}, duration{5min}, window{10s}, batchTimeout{30s};
+    std::optional<std::chrono::milliseconds> monitoringStat{10s};
     std::filesystem::path output{"latency"};
 };
 
@@ -49,6 +80,7 @@ Config parseArgs(int argc, char **argv) {
                          "  --task SUB:Q100;S1;T5    default SUB:Q100\n"
                          "  --warmup 30s             --duration 5m\n"
                          "  --window 10s             --batch-timeout 30s\n"
+                         "  --monitoring-stat 10s    0 disables QD statistics\n"
                          "  --output PREFIX          default latency\n";
             std::exit(0);
         }
@@ -65,6 +97,14 @@ Config parseArgs(int argc, char **argv) {
             config.task = value;
         } else if (arg == "--output") {
             config.output = value;
+        } else if (arg == "--monitoring-stat") {
+            auto period = latency::parseMonitoringPeriod(value);
+
+            if (!period) {
+                throw std::invalid_argument(period.error());
+            }
+
+            config.monitoringStat = *period;
         } else {
             auto duration = latency::parseDuration(value);
 
@@ -87,6 +127,16 @@ Config parseArgs(int argc, char **argv) {
     }
 
     return config;
+}
+
+std::string configureMonitoring(const std::optional<std::chrono::milliseconds> &period) {
+    const auto value = latency::monitoringPeriodPropertyValue(period);
+
+    if (!System::setProperty(MONITORING_STAT_PROPERTY, value)) {
+        throw std::runtime_error("cannot set " + std::string{MONITORING_STAT_PROPERTY} + "=" + value);
+    }
+
+    return value;
 }
 
 // An event is retained until its batch marker supplies the authoritative publication timestamp.
@@ -112,7 +162,8 @@ class Collector {
     mutable std::mutex mutex_;
     bool measuring_{};
     std::vector<latency::Sample> eventWindow_, batchWindow_;
-    std::vector<std::int64_t> eventGlobal_, batchGlobal_;
+    std::array<std::vector<std::int64_t>, EVENT_KINDS.size()> eventGlobalByKind_;
+    std::vector<std::int64_t> batchGlobal_;
     std::map<std::int32_t, PendingBatch> pending_;
     std::map<std::int64_t, std::int32_t> secondToSequence_;
     std::map<std::int64_t, std::vector<PendingEvent>> quotesBySecond_;
@@ -184,7 +235,7 @@ class Collector {
 
             eventWindow_.push_back(
                 latency::Sample{event.observed, publishTime, delta, event.kind, std::move(event.symbol)});
-            eventGlobal_.push_back(delta);
+            eventGlobalByKind_[eventKindIndex(event.kind)].push_back(delta);
         }
 
         const auto batchDelta = batch.lastObserved - *batch.timestamp;
@@ -221,16 +272,22 @@ class Collector {
         std::size_t callbacks{}, negative{}, missing{};
     };
     struct Totals {
-        std::vector<std::int64_t> events, batches;
+        std::array<std::vector<std::int64_t>, EVENT_KINDS.size()> eventsByKind;
+        std::vector<std::int64_t> batches;
         std::size_t callbacks{}, negative{}, missing{}, pending{};
     };
 
-    Collector(std::size_t expectedPerBatch, std::chrono::milliseconds timeout, std::size_t reserveEvents)
-        : expectedPerBatch_(expectedPerBatch), batchTimeout_(timeout) {
-        eventWindow_.reserve(reserveEvents);
+    Collector(const latency::TaskPattern &pattern, std::chrono::milliseconds timeout, std::size_t reserveWindowEvents,
+              std::size_t reserveBatches)
+        : expectedPerBatch_(pattern.eventCount()), batchTimeout_(timeout) {
+        eventWindow_.reserve(reserveWindowEvents);
         batchWindow_.reserve(32);
-        eventGlobal_.reserve(reserveEvents * 30);
-        batchGlobal_.reserve(512);
+
+        for (const auto kind : EVENT_KINDS) {
+            eventGlobalByKind_[eventKindIndex(kind)].reserve(pattern.quantity(kind).value_or(0) * reserveBatches);
+        }
+
+        batchGlobal_.reserve(reserveBatches);
     }
 
     void beginMeasurement() {
@@ -360,7 +417,9 @@ class Collector {
 
     Totals totals() const {
         std::lock_guard lock{mutex_};
-        return Totals{eventGlobal_, batchGlobal_, callbacksTotal_, negativeTotal_, missingTotal_, pending_.size()};
+
+        return Totals{eventGlobalByKind_, batchGlobal_,  callbacksTotal_,
+                      negativeTotal_,     missingTotal_, pending_.size()};
     }
     std::size_t pendingCount() const {
         std::lock_guard lock{mutex_};
@@ -372,15 +431,39 @@ class Collector {
 class Reporter {
     std::ofstream summary_, outliers_;
     std::int64_t runStart_{};
-    std::size_t expectedPerBatch_{};
+    std::size_t expectedEventsPerBatch_{};
+    std::array<std::size_t, EVENT_KINDS.size()> expectedEventsByKind_{};
     std::size_t windowIndex_{};
 
-    static std::vector<std::int64_t> latencies(const std::vector<latency::Sample> &samples) {
+    static std::vector<std::int64_t> latencies(const std::vector<latency::Sample> &samples,
+                                               std::optional<latency::EventKind> kind = std::nullopt) {
         std::vector<std::int64_t> result;
         result.reserve(samples.size());
 
         for (const auto &sample : samples) {
+            if (kind && sample.kind != *kind) {
+                continue;
+            }
+
             result.push_back(sample.latencyNs);
+        }
+
+        return result;
+    }
+
+    static std::vector<std::int64_t>
+    combinedLatencies(const std::array<std::vector<std::int64_t>, EVENT_KINDS.size()> &valuesByKind) {
+        std::size_t size = 0;
+
+        for (const auto &values : valuesByKind) {
+            size += values.size();
+        }
+
+        std::vector<std::int64_t> result;
+        result.reserve(size);
+
+        for (const auto &values : valuesByKind) {
+            result.insert(result.end(), values.begin(), values.end());
         }
 
         return result;
@@ -403,9 +486,9 @@ class Reporter {
         std::cout << " us\n";
     }
     void writeSummary(std::int64_t start, std::int64_t end, std::string_view kind, const latency::Statistics &s,
-                      std::size_t callbacks, std::size_t negative, std::size_t missing) {
+                      std::size_t expectedPerBatch, std::size_t callbacks, std::size_t negative, std::size_t missing) {
         summary_ << latency::utcTimestamp(start) << ',' << latency::utcTimestamp(end) << ',' << kind << ',' << s.count
-                 << ',' << expectedPerBatch_ << ',' << callbacks << ',' << negative << ',' << missing << ','
+                 << ',' << expectedPerBatch << ',' << callbacks << ',' << negative << ',' << missing << ','
                  << microseconds(s.minimum) << ',' << microseconds(s.mean) << ',' << microseconds(s.p50) << ','
                  << microseconds(s.p90) << ',' << microseconds(s.p95) << ',' << microseconds(s.p99) << ','
                  << microseconds(s.p999) << ',' << microseconds(s.maximum) << ',' << microseconds(s.q1) << ','
@@ -413,11 +496,15 @@ class Reporter {
                  << s.outlierCount << '\n';
     }
     void writeOutliers(const std::vector<latency::Sample> &samples, std::string_view kind,
-                       const latency::Statistics &stats) {
+                       const latency::Statistics &stats, std::optional<latency::EventKind> eventKind = std::nullopt) {
         for (const auto &sample : samples) {
+            if (eventKind && sample.kind != *eventKind) {
+                continue;
+            }
+
             if (latency::isUpperOutlier(sample.latencyNs, stats)) {
                 outliers_ << latency::utcTimestamp(sample.observedAtNs) << ',' << kind << ','
-                          << (kind == "event" ? latency::eventKindName(sample.kind) : "") << ',' << sample.symbol << ','
+                          << (eventKind ? latency::eventKindName(sample.kind) : "") << ',' << sample.symbol << ','
                           << sample.publishTimeNs << ',' << sample.latencyNs << ','
                           << static_cast<std::int64_t>(stats.outlierThreshold) << '\n';
             }
@@ -426,8 +513,12 @@ class Reporter {
 
     public:
     // Opens both reports together so a run cannot proceed with only one of its outputs available.
-    Reporter(const std::filesystem::path &prefix, std::size_t expectedPerBatch)
-        : runStart_(latency::unixNanosNow()), expectedPerBatch_(expectedPerBatch) {
+    Reporter(const std::filesystem::path &prefix, const latency::TaskPattern &pattern)
+        : runStart_(latency::unixNanosNow()), expectedEventsPerBatch_(pattern.eventCount()) {
+        for (const auto kind : EVENT_KINDS) {
+            expectedEventsByKind_[eventKindIndex(kind)] = pattern.quantity(kind).value_or(0);
+        }
+
         auto summaryPath = prefix;
         summaryPath += "-summary.csv";
         auto outliersPath = prefix;
@@ -459,28 +550,54 @@ class Reporter {
         ++windowIndex_;
         const auto eventStats = latency::calculateStatistics(latencies(data.events));
         const auto batchStats = latency::calculateStatistics(latencies(data.batches));
+
         std::cout << "Window " << windowIndex_ << " [" << latency::utcTimestamp(start) << ", "
                   << latency::utcTimestamp(end) << "] callbacks=" << data.callbacks
                   << " clock-anomalies=" << data.negative << " missing-batches=" << data.missing << '\n';
         printStats("event", eventStats);
+
+        writeSummary(start, end, "event", eventStats, expectedEventsPerBatch_, data.callbacks, data.negative,
+                     data.missing);
+
+        for (const auto kind : EVENT_KINDS) {
+            const auto sampleKind = eventSampleKind(kind);
+            const auto stats = latency::calculateStatistics(latencies(data.events, kind));
+
+            printStats(sampleKind, stats);
+            writeSummary(start, end, sampleKind, stats, expectedEventsByKind_[eventKindIndex(kind)], data.callbacks,
+                         data.negative, data.missing);
+            writeOutliers(data.events, sampleKind, stats, kind);
+        }
+
         printStats("batch", batchStats);
-        writeSummary(start, end, "event", eventStats, data.callbacks, data.negative, data.missing);
-        writeSummary(start, end, "batch", batchStats, data.callbacks, data.negative, data.missing);
-        writeOutliers(data.events, "event", eventStats);
+        writeSummary(start, end, "batch", batchStats, 1, data.callbacks, data.negative, data.missing);
         writeOutliers(data.batches, "batch", batchStats);
         summary_.flush();
         outliers_.flush();
     }
 
     void final(const Collector::Totals &totals, std::int64_t end) {
-        const auto eventStats = latency::calculateStatistics(totals.events);
+        const auto eventStats = latency::calculateStatistics(combinedLatencies(totals.eventsByKind));
         const auto batchStats = latency::calculateStatistics(totals.batches);
+
         std::cout << "Final summary callbacks=" << totals.callbacks << " clock-anomalies=" << totals.negative
                   << " missing-batches=" << totals.missing << " pending=" << totals.pending << '\n';
         printStats("event", eventStats);
+
+        writeSummary(runStart_, end, "event-total", eventStats, expectedEventsPerBatch_, totals.callbacks,
+                     totals.negative, totals.missing);
+
+        for (const auto kind : EVENT_KINDS) {
+            const auto sampleKind = std::string{eventSampleKind(kind)} + "-total";
+            const auto stats = latency::calculateStatistics(totals.eventsByKind[eventKindIndex(kind)]);
+
+            printStats(sampleKind, stats);
+            writeSummary(runStart_, end, sampleKind, stats, expectedEventsByKind_[eventKindIndex(kind)],
+                         totals.callbacks, totals.negative, totals.missing);
+        }
+
         printStats("batch", batchStats);
-        writeSummary(runStart_, end, "event-total", eventStats, totals.callbacks, totals.negative, totals.missing);
-        writeSummary(runStart_, end, "batch-total", batchStats, totals.callbacks, totals.negative, totals.missing);
+        writeSummary(runStart_, end, "batch-total", batchStats, 1, totals.callbacks, totals.negative, totals.missing);
     }
 };
 
@@ -508,14 +625,20 @@ int main(int argc, char **argv) {
         }
 
         const auto expected = pattern->eventCount();
-        const auto reserve =
-            expected * static_cast<std::size_t>(std::max<std::int64_t>(1, config.window.count() / 1000));
-        Collector collector{expected, config.batchTimeout, reserve};
-        Reporter reporter{config.output, expected};
+        const auto windowBatches =
+            static_cast<std::size_t>(std::max<std::int64_t>(1, (config.window.count() + 999) / 1000));
+        const auto runBatches =
+            static_cast<std::size_t>(std::max<std::int64_t>(1, (config.duration.count() + 999) / 1000));
+        Collector collector{*pattern, config.batchTimeout, expected * windowBatches, runBatches};
+        Reporter reporter{config.output, *pattern};
 
         System::setProperty("dxscheme.nanoTime", "true");
-        const auto endpoint =
-            DXEndpoint::newBuilder()->withRole(DXEndpoint::Role::STREAM_FEED)->withName("latency-client")->build();
+        const auto monitoringStat = configureMonitoring(config.monitoringStat);
+        const auto endpoint = DXEndpoint::newBuilder()
+                                  ->withRole(DXEndpoint::Role::STREAM_FEED)
+                                  ->withName("latency-client")
+                                  ->withProperty(MONITORING_STAT_PROPERTY, monitoringStat)
+                                  ->build();
         const auto feed = endpoint->getFeed();
         std::vector<std::shared_ptr<DXFeedSubscription>> subscriptions;
         const auto subscribe = [&](const EventTypeEnum &type, latency::EventKind kind) {

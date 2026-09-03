@@ -11,7 +11,9 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -20,6 +22,7 @@ using namespace dxfcpp;
 
 namespace {
 std::atomic_bool interrupted{};
+constexpr std::string_view MONITORING_STAT_PROPERTY = "monitoring.stat";
 
 void onSignal(int) {
     interrupted.store(true);
@@ -219,26 +222,56 @@ class Generator {
     }
 };
 
-std::string addressFromArgs(int argc, char **argv) {
-    std::string address = ":7400";
+struct Config {
+    std::string address{":7400"};
+    std::optional<std::chrono::milliseconds> monitoringStat{10s};
+};
+
+Config parseArgs(int argc, char **argv) {
+    Config config;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
 
         if (arg == "--help") {
-            std::cout << "Usage: latency_server [--address :7400]\n";
+            std::cout << "Usage: latency_server [options]\n"
+                         "  --address :7400          default :7400\n"
+                         "  --monitoring-stat 10s    0 disables QD statistics\n";
             std::exit(0);
         }
 
-        if (arg == "--address" && i + 1 < argc) {
-            address = argv[++i];
+        if (i + 1 >= argc) {
+            throw std::invalid_argument("missing value for " + arg);
+        }
+
+        const std::string value = argv[++i];
+
+        if (arg == "--address") {
+            config.address = value;
+        } else if (arg == "--monitoring-stat") {
+            auto period = latency::parseMonitoringPeriod(value);
+
+            if (!period) {
+                throw std::invalid_argument(period.error());
+            }
+
+            config.monitoringStat = *period;
         } else {
-            std::cerr << "Unknown or incomplete argument: " << arg << '\n';
-            std::exit(2);
+            throw std::invalid_argument("unknown argument: " + arg);
         }
     }
 
-    return address;
+    return config;
+}
+
+std::string configureMonitoring(const std::optional<std::chrono::milliseconds> &period) {
+    const auto value = latency::monitoringPeriodPropertyValue(period);
+
+    if (!System::setProperty(MONITORING_STAT_PROPERTY, value)) {
+        throw std::runtime_error("cannot set " + std::string{MONITORING_STAT_PROPERTY} + "=" + value);
+    }
+
+    return value;
 }
 } // namespace
 
@@ -247,11 +280,15 @@ int main(int argc, char **argv) {
     std::signal(SIGTERM, onSignal);
 
     try {
-        const auto address = addressFromArgs(argc, argv);
+        const auto config = parseArgs(argc, argv);
 
         System::setProperty("dxscheme.nanoTime", "true");
-        const auto endpoint =
-            DXEndpoint::newBuilder()->withRole(DXEndpoint::Role::PUBLISHER)->withName("latency-server")->build();
+        const auto monitoringStat = configureMonitoring(config.monitoringStat);
+        const auto endpoint = DXEndpoint::newBuilder()
+                                  ->withRole(DXEndpoint::Role::PUBLISHER)
+                                  ->withName("latency-server")
+                                  ->withProperty(MONITORING_STAT_PROPERTY, monitoringStat)
+                                  ->build();
         const auto publisher = endpoint->getPublisher();
         Generator generator{publisher};
         const auto observable = publisher->getSubscription(TextMessage::TYPE);
@@ -277,8 +314,8 @@ int main(int argc, char **argv) {
             });
         const auto listenerId = observable->addChangeListener(listener);
 
-        endpoint->connect(address);
-        std::cout << "Latency server listening on " << address << ". Press Ctrl+C to stop.\n";
+        endpoint->connect(config.address);
+        std::cout << "Latency server listening on " << config.address << ". Press Ctrl+C to stop.\n";
 
         while (!interrupted.load()) {
             std::this_thread::sleep_for(200ms);
