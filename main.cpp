@@ -4,6 +4,7 @@
 #include <iostream>
 #include <string_view>
 #include <variant>
+#include <array>
 
 using u64 = std::uint64_t;
 using u32 = std::uint32_t;
