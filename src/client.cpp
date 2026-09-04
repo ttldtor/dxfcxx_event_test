@@ -713,13 +713,15 @@ int main(int argc, char **argv) {
         }
 
         collector.endMeasurement();
-        control->removeSymbols(config.task);
         const auto drainDeadline = std::chrono::steady_clock::now() + config.batchTimeout;
 
-        // Give already-published batches a chance to complete after the control subscription has been removed.
+        // Keep the marker subscription active while already-published batches drain. New sequences are ignored after
+        // endMeasurement(), so the publisher can continue without extending the measured interval.
         while (collector.pendingCount() && std::chrono::steady_clock::now() < drainDeadline && !interrupted.load()) {
             std::this_thread::sleep_for(100ms);
         }
+
+        control->removeSymbols(config.task);
 
         const auto finalWall = latency::unixNanosNow();
         auto last = collector.takeWindow(true);

@@ -1,0 +1,5 @@
+profile,repetition,task,status,client_exit_code
+"150k-1s",1,"SUB:Q50000;T50000;S50000@1s",passed,0
+"150k-100ms",1,"SUB:Q5000;T5000;S5000@100ms",passed,0
+"150k-10ms",1,"SUB:Q500;T500;S500@10ms",passed,0
+"150k-1ms-stress",1,"SUB:Q50;T50;S50@1ms",failed,-1
