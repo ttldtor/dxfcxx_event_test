@@ -22,7 +22,7 @@ RUN cmake -S . -B /build -G Ninja \
         -DDXFCXX_BUILD_SAMPLES=OFF \
         -DDXFCXX_BUILD_TOOLS=OFF \
         -DDXFCXX_INSTALL=OFF \
-    && cmake --build /build --parallel \
+    && cmake --build /build --parallel 4 \
     && cmake --install /build
 
 FROM debian:bookworm-slim AS runtime
@@ -30,7 +30,7 @@ FROM debian:bookworm-slim AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates libstdc++6 \
+    && apt-get install --yes --no-install-recommends ca-certificates libstdc++6 zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /opt/latency/bin /opt/latency/bin

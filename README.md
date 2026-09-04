@@ -14,7 +14,7 @@ On Linux or macOS, use a single-configuration build:
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DDXFCXX_BUILD_DOC=OFF -DDXFCXX_BUILD_SAMPLES=OFF -DDXFCXX_BUILD_TOOLS=OFF
-cmake --build build --parallel
+cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
 ```
 
@@ -23,7 +23,7 @@ On Windows, run the following from a Visual Studio developer shell:
 ```powershell
 cmake -S . -B build -A x64 `
   -DDXFCXX_BUILD_DOC=OFF -DDXFCXX_BUILD_SAMPLES=OFF -DDXFCXX_BUILD_TOOLS=OFF
-cmake --build build --config Release --parallel
+cmake --build build --config Release --parallel 4
 ctest --test-dir build -C Release --output-on-failure
 ```
 

@@ -32,7 +32,7 @@ jobs:
           -DDXFCXX_BUILD_TOOLS=OFF
           ${{ matrix.options }}
       - name: Build
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --config Release --parallel 4
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
 

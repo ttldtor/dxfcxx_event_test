@@ -31,7 +31,7 @@ RUN call C:\BuildTools\Common7\Tools\VsDevCmd.bat -arch=amd64 `
         -DDXFCXX_BUILD_TOOLS=OFF `
         -DDXFCXX_INSTALL=OFF `
         -DDXFCXX_LINK_STATIC_RUNTIME=ON `
-    && cmake --build C:\build --parallel `
+    && cmake --build C:\build --parallel 4 `
     && cmake --install C:\build
 
 FROM mcr.microsoft.com/windows/servercore:${WINDOWS_VERSION} AS runtime
