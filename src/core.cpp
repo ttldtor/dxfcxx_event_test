@@ -21,6 +21,8 @@ std::optional<EventKind> parseKind(char value) {
         return EventKind::QUOTE;
     case 'T':
         return EventKind::TRADE;
+    case 'E':
+        return EventKind::TRADE_ETH;
     case 'S':
         return EventKind::SUMMARY;
     default:
@@ -41,6 +43,12 @@ std::size_t TaskPattern::eventCount() const {
     }
 
     return result;
+}
+
+std::size_t TaskPattern::symbolCount() const {
+    const auto largest = std::ranges::max_element(items, {}, &PatternItem::quantity);
+
+    return largest == items.end() ? 0 : largest->quantity;
 }
 
 std::string TaskPattern::toString() const {
@@ -104,10 +112,29 @@ std::vector<std::string> TaskPattern::symbols(EventKind kind) const {
         return result;
     }
 
+    const auto width = symbolWidth(symbolCount());
+
+    for (std::size_t i = 0; i < count; ++i) {
+        result.push_back(std::format("SYM{:0{}}", i, width));
+    }
+
+    return result;
+}
+
+std::vector<std::string> TaskPattern::symbols() const {
+    const auto count = symbolCount();
+    std::vector<std::string> result;
+
+    result.reserve(count);
+
+    if (!count) {
+        return result;
+    }
+
     const auto width = symbolWidth(count);
 
     for (std::size_t i = 0; i < count; ++i) {
-        result.push_back(std::format("{}{:0{}}", static_cast<char>(kind), i, width));
+        result.push_back(std::format("SYM{:0{}}", i, width));
     }
 
     return result;
@@ -214,6 +241,8 @@ std::string eventKindName(EventKind kind) {
         return "Quote";
     case EventKind::TRADE:
         return "Trade";
+    case EventKind::TRADE_ETH:
+        return "TradeETH";
     case EventKind::SUMMARY:
         return "Summary";
     }

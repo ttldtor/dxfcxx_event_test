@@ -77,6 +77,12 @@ class Generator {
             events.push_back(std::move(event));
         }
 
+        for (const auto &symbol : pattern.symbols(latency::EventKind::TRADE_ETH)) {
+            auto event = std::make_shared<TradeETH>(symbol);
+            event->setSize(1);
+            events.push_back(std::move(event));
+        }
+
         for (const auto &symbol : pattern.symbols(latency::EventKind::SUMMARY)) {
             auto event = std::make_shared<Summary>(symbol);
             event->setDayId(1);
@@ -84,6 +90,18 @@ class Generator {
         }
 
         events.push_back(std::make_shared<TextMessage>(command, "LATENCY_BATCH"));
+
+        return events;
+    }
+
+    static std::vector<std::shared_ptr<EventType>> makeInitialEvents(const latency::TaskPattern &pattern) {
+        std::vector<std::shared_ptr<EventType>> events;
+
+        events.reserve(pattern.symbolCount());
+
+        for (const auto &symbol : pattern.symbols()) {
+            events.push_back(std::make_shared<Profile>(symbol));
+        }
 
         return events;
     }
@@ -104,6 +122,10 @@ class Generator {
                 trade->setPrice(100.0 + active.tick % 100);
                 trade->setSize(1);
                 trade->setSequence(sequence);
+            } else if (auto tradeEth = event->sharedAs<TradeETH>()) {
+                tradeEth->setPrice(100.0 + active.tick % 100);
+                tradeEth->setSize(1);
+                tradeEth->setSequence(sequence);
             } else if (auto summary = event->sharedAs<Summary>()) {
                 summary->setDayId(sequence);
                 summary->setDayOpenPrice(99);
@@ -207,6 +229,14 @@ class Generator {
                                   << " [" << command.text << "]\n";
                     } else if (!active) {
                         try {
+                            const auto initialEvents = makeInitialEvents(*parsed);
+
+                            if (!initialEvents.empty()) {
+                                publisher_->publishEvents(initialEvents);
+                                std::cout << std::format("Published {} initial Profile events for {}\n",
+                                                         initialEvents.size(), command.text);
+                            }
+
                             active.emplace(ActiveTask{command.text, *parsed, makeEvents(*parsed, command.text)});
                             nextTick = std::chrono::steady_clock::now();
                             std::cout << "Started " << command.text << " (" << active->pattern.eventCount()

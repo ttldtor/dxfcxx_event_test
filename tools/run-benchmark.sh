@@ -24,6 +24,7 @@ duration=""
 window=""
 batch_timeout=""
 monitoring_period=""
+client_role=""
 cooldown_seconds=""
 address=""
 listen_address=""
@@ -47,6 +48,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
             WINDOW) window=$value ;;
             BATCH_TIMEOUT) batch_timeout=$value ;;
             MONITORING_PERIOD) monitoring_period=$value ;;
+            CLIENT_ROLE) client_role=$value ;;
             COOLDOWN_SECONDS) cooldown_seconds=$value ;;
             ADDRESS) address=$value ;;
             LISTEN_ADDRESS) listen_address=$value ;;
@@ -61,6 +63,7 @@ done < "$config"
 [[ -n "$window" ]] || { echo "Missing WINDOW in $config" >&2; exit 2; }
 [[ -n "$batch_timeout" ]] || { echo "Missing BATCH_TIMEOUT in $config" >&2; exit 2; }
 [[ -n "$monitoring_period" ]] || { echo "Missing MONITORING_PERIOD in $config" >&2; exit 2; }
+[[ -n "$client_role" ]] || { echo "Missing CLIENT_ROLE in $config" >&2; exit 2; }
 [[ -n "$cooldown_seconds" ]] || { echo "Missing COOLDOWN_SECONDS in $config" >&2; exit 2; }
 [[ -n "$address" ]] || { echo "Missing ADDRESS in $config" >&2; exit 2; }
 [[ -n "$listen_address" ]] || { echo "Missing LISTEN_ADDRESS in $config" >&2; exit 2; }
@@ -79,8 +82,8 @@ if $dry_run; then
     for ((repetition=1; repetition<=repetitions; ++repetition)); do
         for ((position=0; position<${#profile_names[@]}; ++position)); do
             index=$(((position + repetition - 1) % ${#profile_names[@]}))
-            printf '%s-r%02d : %s ; warmup=%s duration=%s\n' "${profile_names[$index]}" "$repetition" \
-                "${profile_tasks[$index]}" "$warmup" "$duration"
+            printf '%s-r%02d : %s ; role=%s warmup=%s duration=%s\n' "${profile_names[$index]}" "$repetition" \
+                "${profile_tasks[$index]}" "$client_role" "$warmup" "$duration"
         done
     done
     printf 'Analyzer: %s --monitoring-period %s\n' "$analyzer_binary" "$monitoring_period"
@@ -101,6 +104,7 @@ printf '%s\n' 'profile,repetition,task,status,client_exit_code' > "$manifest"
     printf 'processor_count=%s\n' "$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)"
     printf 'binary_directory=%s\n' "$(cd "$binary_directory" && pwd)"
     printf 'suite_config=%s\n' "$(cd "$(dirname "$config")" && pwd)/$(basename "$config")"
+    printf 'client_role=%s\n' "$client_role"
 } > "$run_directory/environment.txt"
 
 server_pid=""
@@ -139,6 +143,7 @@ for ((repetition=1; repetition<=repetitions; ++repetition)); do
         client_exit=-1
         if $ready; then
             "$client_binary" --address "$address" --task "$task" \
+                --role "$client_role" \
                 --warmup "$warmup" --duration "$duration" \
                 --window "$window" --batch-timeout "$batch_timeout" \
                 --monitoring-stat "$monitoring_period" --output "$output_prefix" \

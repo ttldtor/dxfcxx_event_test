@@ -27,7 +27,7 @@ function Read-SuiteConfig([string]$Path) {
     }
 
     foreach ($required in "REPETITIONS", "WARMUP", "DURATION", "WINDOW", "BATCH_TIMEOUT",
-             "MONITORING_PERIOD", "COOLDOWN_SECONDS", "ADDRESS", "LISTEN_ADDRESS") {
+             "MONITORING_PERIOD", "CLIENT_ROLE", "COOLDOWN_SECONDS", "ADDRESS", "LISTEN_ADDRESS") {
         if (-not $settings.ContainsKey($required)) { throw "Missing $required in $Path" }
     }
     if ($profiles.Count -eq 0) { throw "No PROFILE entries in $Path" }
@@ -54,7 +54,7 @@ if ($DryRun) {
         for ($position = 0; $position -lt $suite.Profiles.Count; ++$position) {
             $profile = $suite.Profiles[($position + $repetition - 1) % $suite.Profiles.Count]
             $prefix = "{0}-r{1:d2}" -f $profile.Name, $repetition
-            Write-Output "$prefix : $($profile.Task) ; warmup=$($settings.WARMUP) duration=$($settings.DURATION)"
+            Write-Output "$prefix : $($profile.Task) ; role=$($settings.CLIENT_ROLE) warmup=$($settings.WARMUP) duration=$($settings.DURATION)"
         }
     }
     Write-Output "Analyzer: $analyzerBinary --monitoring-period $($settings.MONITORING_PERIOD)"
@@ -77,6 +77,7 @@ $manifest = Join-Path $runDirectory "run-manifest.csv"
     "processor_count=$([Environment]::ProcessorCount)"
     "binary_directory=$((Resolve-Path -LiteralPath $BinaryDirectory).Path)"
     "suite_config=$((Resolve-Path -LiteralPath $Config).Path)"
+    "client_role=$($settings.CLIENT_ROLE)"
 ) | Set-Content -LiteralPath (Join-Path $runDirectory "environment.txt") -Encoding utf8
 
 $failed = $false
@@ -111,6 +112,7 @@ for ($repetition = 1; $repetition -le $repetitions; ++$repetition) {
             if (-not $ready) { throw "Latency server did not become ready" }
 
             & $clientBinary --address $settings.ADDRESS --task $profile.Task `
+                --role $settings.CLIENT_ROLE `
                 --warmup $settings.WARMUP --duration $settings.DURATION --window $settings.WINDOW `
                 --batch-timeout $settings.BATCH_TIMEOUT --monitoring-stat $settings.MONITORING_PERIOD `
                 --output $outputPrefix *> $clientLog

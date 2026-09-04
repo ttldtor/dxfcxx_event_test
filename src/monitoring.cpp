@@ -44,6 +44,16 @@ struct LatencyRunRow {
     double nominalEventsPerSecond{};
     double samples{};
     double expectedPerBatch{};
+    std::string endpointRole{"stream-feed"};
+    double published{};
+    double delivered{};
+    double notDelivered{};
+    double deliveryRatio{};
+    double excessEvents{};
+    double fullPublications{};
+    double partialPublications{};
+    double emptyPublications{};
+    double uncorrelatedEvents{};
     double callbacks{};
     double clockAnomalies{};
     double missingBatches{};
@@ -466,6 +476,16 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
     const auto samplesIndex = indexOf("samples");
     const auto expectedIndex = indexOf("expected_per_batch");
     const auto nominalIndex = indexOf("nominal_events_per_second");
+    const auto roleIndex = indexOf("endpoint_role");
+    const auto publishedIndex = indexOf("published");
+    const auto deliveredIndex = indexOf("delivered");
+    const auto notDeliveredIndex = indexOf("not_delivered");
+    const auto deliveryRatioIndex = indexOf("delivery_ratio");
+    const auto excessIndex = indexOf("excess_events");
+    const auto fullIndex = indexOf("full_publications");
+    const auto partialIndex = indexOf("partial_publications");
+    const auto emptyIndex = indexOf("empty_publications");
+    const auto uncorrelatedIndex = indexOf("uncorrelated_events");
     const auto callbacksIndex = indexOf("callbacks");
     const auto clockIndex = indexOf("clock_anomalies");
     const auto missingIndex = indexOf("missing_batches");
@@ -542,9 +562,44 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
             nominal = *value;
         }
 
-        rows.push_back(LatencyRunRow{profile, identity, columns[*kindIndex], nominal, *values[0], *values[1],
-                                     *values[2], *values[3], *values[4], pending, *values[5], *values[6], *values[7],
-                                     *values[8], *values[9], *values[10], *values[11], *values[12], *values[13]});
+        LatencyRunRow row{profile, identity, columns[*kindIndex], nominal, *values[0], *values[1]};
+        row.callbacks = *values[2];
+        row.clockAnomalies = *values[3];
+        row.missingBatches = *values[4];
+        row.pendingBatches = pending;
+        row.minimumUs = *values[5];
+        row.meanUs = *values[6];
+        row.p50Us = *values[7];
+        row.p90Us = *values[8];
+        row.p95Us = *values[9];
+        row.p99Us = *values[10];
+        row.p999Us = *values[11];
+        row.maximumUs = *values[12];
+        row.outliers = *values[13];
+
+        if (roleIndex && columns.size() > *roleIndex) {
+            row.endpointRole = columns[*roleIndex];
+        }
+
+        const auto optionalNumber = [&](std::optional<std::size_t> index, double fallback = 0.0) {
+            if (!index || columns.size() <= *index) {
+                return fallback;
+            }
+
+            const auto value = parseNumber(columns[*index]);
+
+            return value.value_or(fallback);
+        };
+        row.published = optionalNumber(publishedIndex, row.samples);
+        row.delivered = optionalNumber(deliveredIndex, row.samples);
+        row.notDelivered = optionalNumber(notDeliveredIndex);
+        row.deliveryRatio = optionalNumber(deliveryRatioIndex, row.published ? row.delivered / row.published : 0.0);
+        row.excessEvents = optionalNumber(excessIndex);
+        row.fullPublications = optionalNumber(fullIndex);
+        row.partialPublications = optionalNumber(partialIndex);
+        row.emptyPublications = optionalNumber(emptyIndex);
+        row.uncorrelatedEvents = optionalNumber(uncorrelatedIndex);
+        rows.push_back(std::move(row));
     }
 
     const auto batch = std::ranges::find(rows, "batch-total", &LatencyRunRow::sampleKind);
@@ -555,9 +610,10 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
             row.nominalEventsPerSecond = 0;
         }
 
+        const auto exactDelivery = row.sampleKind == "batch-total" || row.notDelivered == 0;
         row.integrityOk = batches > 0 && row.clockAnomalies == 0 && row.missingBatches == 0 &&
-                          row.pendingBatches == 0 &&
-                          (row.sampleKind == "batch-total" || row.samples == batches * row.expectedPerBatch);
+                          row.pendingBatches == 0 && row.excessEvents == 0 &&
+                          (row.endpointRole == "feed" || exactDelivery);
     }
 
     return rows;
@@ -805,7 +861,10 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
     }
 
     runs << "\"profile\",\"scenario\",\"repetition\",\"nominal_events_per_second\",\"sample_kind\","
-            "\"samples\",\"expected_per_batch\",\"callbacks\",\"clock_anomalies\",\"missing_batches\","
+            "\"samples\",\"expected_per_batch\",\"endpoint_role\",\"published\",\"delivered\","
+            "\"not_delivered\",\"delivery_ratio\",\"excess_events\",\"full_publications\","
+            "\"partial_publications\",\"empty_publications\",\"uncorrelated_events\",\"callbacks\","
+            "\"clock_anomalies\",\"missing_batches\","
             "\"pending_batches\",\"integrity_ok\",\"min_us\",\"mean_us\",\"p50_us\",\"p90_us\","
             "\"p95_us\",\"p99_us\",\"p999_us\",\"max_us\",\"outliers\"\n";
 
@@ -817,6 +876,16 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
         writeColumn(runs, row.sampleKind);
         writeColumn(runs, row.samples);
         writeColumn(runs, row.expectedPerBatch);
+        writeColumn(runs, row.endpointRole);
+        writeColumn(runs, row.published);
+        writeColumn(runs, row.delivered);
+        writeColumn(runs, row.notDelivered);
+        writeColumn(runs, row.deliveryRatio);
+        writeColumn(runs, row.excessEvents);
+        writeColumn(runs, row.fullPublications);
+        writeColumn(runs, row.partialPublications);
+        writeColumn(runs, row.emptyPublications);
+        writeColumn(runs, row.uncorrelatedEvents);
         writeColumn(runs, row.callbacks);
         writeColumn(runs, row.clockAnomalies);
         writeColumn(runs, row.missingBatches);
@@ -839,11 +908,15 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
         double LatencyRunRow::*member;
     };
 
-    constexpr std::array latencyMetrics{
-        LatencyMetric{"mean_us", &LatencyRunRow::meanUs},  LatencyMetric{"p50_us", &LatencyRunRow::p50Us},
-        LatencyMetric{"p90_us", &LatencyRunRow::p90Us},    LatencyMetric{"p95_us", &LatencyRunRow::p95Us},
-        LatencyMetric{"p99_us", &LatencyRunRow::p99Us},    LatencyMetric{"p999_us", &LatencyRunRow::p999Us},
-        LatencyMetric{"max_us", &LatencyRunRow::maximumUs}};
+    constexpr std::array latencyMetrics{LatencyMetric{"mean_us", &LatencyRunRow::meanUs},
+                                        LatencyMetric{"p50_us", &LatencyRunRow::p50Us},
+                                        LatencyMetric{"p90_us", &LatencyRunRow::p90Us},
+                                        LatencyMetric{"p95_us", &LatencyRunRow::p95Us},
+                                        LatencyMetric{"p99_us", &LatencyRunRow::p99Us},
+                                        LatencyMetric{"p999_us", &LatencyRunRow::p999Us},
+                                        LatencyMetric{"max_us", &LatencyRunRow::maximumUs},
+                                        LatencyMetric{"delivery_ratio", &LatencyRunRow::deliveryRatio},
+                                        LatencyMetric{"not_delivered", &LatencyRunRow::notDelivered}};
     std::map<std::pair<std::string, std::string>, std::vector<const LatencyRunRow *>> latencyGroups;
 
     for (const auto &row : latencyRows) {
@@ -916,8 +989,8 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
 
 Run-level values are aggregated using the median; the range shows the minimum and maximum across independent repetitions. Latencies are in milliseconds.
 
-| Scenario | Runs | Event p50 median | Event p99 median (range) | Event p99.9 median | Batch p99 median | Integrity |
-|---|---:|---:|---:|---:|---:|---|
+| Scenario | Role | Runs | Delivery median | Not delivered median | Event p50 median | Event p99 median (range) | Event p99.9 median | Batch p99 median | Integrity |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---|
 )";
 
     std::map<std::string, std::vector<const LatencyRunRow *>> scenarios;
@@ -942,15 +1015,42 @@ Run-level values are aggregated using the median; the range shows the minimum an
         const auto p99 = collect("event-total", &LatencyRunRow::p99Us);
         const auto p999 = collect("event-total", &LatencyRunRow::p999Us);
         const auto batchP99 = collect("batch-total", &LatencyRunRow::p99Us);
+        const auto collectRaw = [&](double LatencyRunRow::*member) {
+            std::vector<double> values;
+
+            for (const auto *row : rows) {
+                if (row->sampleKind == "event-total") {
+                    values.push_back(row->*member);
+                }
+            }
+
+            return compareRuns(std::move(values));
+        };
+        const auto delivery = collectRaw(&LatencyRunRow::deliveryRatio);
+        const auto notDelivered = collectRaw(&LatencyRunRow::notDelivered);
+        const auto eventRow = std::ranges::find_if(rows, [](const auto *row) {
+            return row->sampleKind == "event-total";
+        });
+        const auto role = eventRow == rows.end() ? "unknown" : (*eventRow)->endpointRole;
         const auto integrity = std::ranges::all_of(rows, [](const auto *row) {
             return row->integrityOk;
         });
         const auto missing = rows.empty() ? 0.0 : rows.front()->missingBatches;
         const auto integrityText = integrity ? "OK" : missing > 0 ? "CHECK; missing batches reported" : "CHECK";
-        report << "| " << scenario << " | " << p50.runs << " | " << std::fixed << std::setprecision(3) << p50.median
-               << " | " << p99.median << " (" << p99.minimum << "–" << p99.maximum << ") | " << p999.median << " | "
-               << batchP99.median << " | " << integrityText << " |\n";
+        report << "| " << scenario << " | " << role << " | " << p50.runs << " | " << std::fixed << std::setprecision(3)
+               << delivery.median * 100.0 << "% | " << notDelivered.median << " | " << p50.median << " | " << p99.median
+               << " (" << p99.minimum << "–" << p99.maximum << ") | " << p999.median << " | " << batchP99.median
+               << " | " << integrityText << " |\n";
     }
+
+    report << R"(
+
+`Delivery median` is delivered recurring events divided by events expected for the correlated publications.
+`Not delivered` is an observed delivery deficit, not proof of FEED conflation by itself: endpoint buffering,
+`Dropped` records, incomplete publication correlation, and measurement boundaries must be checked alongside it.
+Events without a delivered timestamp marker are reported separately as `uncorrelated_events` and excluded from the
+delivery ratio.
+)";
 
     report << "\nGenerated files: `latency-runs.csv`, `latency-comparison.csv`, `monitoring.csv`, "
               "`monitoring-summary.csv`, and `monitoring-comparison.csv`.\n\n"

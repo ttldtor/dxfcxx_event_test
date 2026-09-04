@@ -1,8 +1,9 @@
 # dxFeed Graal C++ latency test
 
-This project is a two-process load-testing tool. The server publishes one batch of synthetic `Quote`, `Trade`, and
-`Summary` events per second. The client measures the time between the server's `publishEvents` call and delivery to
-the C++ event listener. A third executable converts QD monitoring logs into machine-readable CSV files.
+This project is a two-process load-testing tool. The server publishes configurable batches of synthetic `Quote`,
+`Trade`, `TradeETH`, and `Summary` events and can publish an initial `Profile` state. The client measures the time
+between the server's `publishEvents` call and delivery to the C++ event listener. A third executable converts QD
+monitoring logs into machine-readable CSV files and compares repeated runs.
 
 ## Native build
 
@@ -63,8 +64,8 @@ publisher call time, achieved rate, and missed publication deadlines. `--monitor
 period and accepts `0` to disable it. For portable sub-20-ms scheduling, the generator yields during the final 20 ms
 before a deadline; high-frequency profiles can therefore consume one CPU core on the publisher.
 
-`latency_client` opens a `STREAM_FEED` connection, requests the task, discards the warm-up interval, and records
-latency during the measurement interval. Its main options are:
+`latency_client` requests the task, discards the warm-up interval, and records latency during the measurement
+interval. Its main options are:
 
 | Option | Default | Purpose |
 |---|---:|---|
@@ -75,12 +76,18 @@ latency during the measurement interval. Its main options are:
 | `--window` | `10s` | Size of each summary row's time window. |
 | `--batch-timeout` | `30s` | Maximum wait for an incomplete marker/event batch. |
 | `--monitoring-stat` | `10s` | QD statistics period; `0` disables it. |
+| `--role` | `stream-feed` | Endpoint role: `stream-feed` preserves updates; `feed` permits conflation. |
 | `--output` | `latency` | Path and filename prefix for generated CSV files. |
 
-The task DSL is `SUB:<type><quantity>[;...][@<period>]`, where `Q`, `T`, and `S` mean Quote, Trade, and Summary. Each
-type may occur once and quantities must be positive. The default period is `1s`. For example,
-`SUB:Q500;S500;T500@10ms` publishes 1,500 events every 10 ms (150,000 events/s); `Q100` creates symbols `Q00` through
-`Q99`.
+The task DSL is `SUB:<type><quantity>[;...][@<period>]`: `Q`, `T`, `E`, and `S` mean Quote, Trade, TradeETH, and
+Summary. Each type may occur once and quantities must be positive. All configured types are recurring and contribute
+to the nominal event rate. The default period is `1s`.
+
+For example, `SUB:Q375;T375;E375;S375@10ms` publishes 1,500 recurring events every 10 ms (150,000 events/s).
+The common instrument universe contains 375 symbols named `SYM000` through `SYM374`; the numeric width is derived
+once from the largest configured quantity. A type with a smaller quantity uses a prefix of the same universe. The
+client automatically includes `Profile` in its single combined market-event subscription, and the test server
+publishes one initial Profile for every symbol in the common universe.
 
 `latency_analyzer` is a standalone post-processing utility and does not connect to dxFeed. It reads a directory of
 latency summaries and captured QD logs, then writes `monitoring.csv` and `monitoring-summary.csv`. Pass
@@ -98,7 +105,7 @@ Start the server:
 Then start the client in another terminal:
 
 ```sh
-./build/latency_client --address 127.0.0.1:7400 --task "SUB:Q1000;S1000;T1000"
+./build/latency_client --address 127.0.0.1:7400 --task "SUB:Q1000;T1000;E1000;S1000"
 ```
 
 Append `.exe` and use `build/Release/` for a Visual Studio build. By default, the client performs a 30-second warm-up
@@ -125,10 +132,11 @@ the same `TZ` setting as the machine that produced them.
 ## Repeated local benchmark suite
 
 The repository includes native launchers for a longer cadence comparison suite. They run three repetitions of four
-mixed profiles, all nominally producing 150,000 events/s: 150,000 events every second, 15,000 every 100 ms, 1,500
-every 10 ms, and 150 every 1 ms. The 1 ms profile is a scheduler/publisher stress case and should be interpreted
-separately. Every run uses a one-minute warm-up, a ten-minute measurement, ten-second windows, and a fresh
-server/client pair. Profile order rotates between repetitions and a 30-second cool-down separates runs.
+mixed profiles in `FEED` mode, all nominally producing 150,000 recurring events/s: 150,000 events every second,
+15,000 every 100 ms, 1,500 every 10 ms, and 150 every 1 ms. Each profile also sends one initial `Profile` per
+instrument. The 1 ms profile is a scheduler/publisher stress case and should be interpreted separately. Every run
+uses a one-minute warm-up, a ten-minute measurement, ten-second windows, and a fresh server/client pair. Profile
+order rotates between repetitions and a 30-second cool-down separates runs.
 
 Build the Release binaries first, then run the launcher for the host operating system. On Windows:
 
@@ -255,15 +263,22 @@ events by the seconds component of their exchange time. The last mapping is unam
 batch per second. This is a synthetic wire contract used by the test; `Summary::dayId` does not represent a trading
 date here.
 
-The client uses `STREAM_FEED` so conflation does not hide delayed events. Latency is stored in nanoseconds and
-displayed in microseconds. A value above `Q3 + 1.5 * IQR` for the current window is classified as an outlier.
-`STREAM_FEED` preserves intermediate updates, but its agent buffer is finite: QD uses `DROP_OLDEST` by default and
-increments the monitoring `Dropped` counter if a consumer falls far enough behind to overflow that buffer.
+The client defaults to `STREAM_FEED`, so conflation does not intentionally hide intermediate updates. The benchmark
+suite selects `FEED` explicitly to reproduce normal feed semantics. Latency is stored in nanoseconds and displayed
+in microseconds. A value above `Q3 + 1.5 * IQR` for the current window is classified as an outlier. `STREAM_FEED`
+preserves intermediate updates, but its agent buffer is finite: QD uses `DROP_OLDEST` by default and increments the
+monitoring `Dropped` counter if a consumer falls far enough behind to overflow that buffer.
 
-The summary contains aggregate `event` and `batch` rows plus `event-quote`, `event-trade`, and `event-summary` rows.
-Their `expected_per_batch` value is the expected sample count for that row (`1` for `batch`). Event outliers are
-classified against the IQR threshold of their own event type and use the corresponding type-specific sample kind in
-the outliers file.
+The summary contains aggregate `event` and `batch` rows plus rows for each recurring event type. Their
+`expected_per_batch` value is the expected sample count for that row (`1` for `batch`). Delivery columns report
+published and delivered recurring events, delivery ratio, deficits, excess events, and full/partial/empty correlated
+publications. In `FEED` mode, `not_delivered` is expected when intermediate states are conflated. It is deliberately
+named as an observation rather than a cause: compare it with QD `Dropped`, buffer, lag, and publication diagnostics
+before attributing every deficit to conflation. Events whose timestamp marker was not delivered are counted as
+`uncorrelated_events`; they are excluded from the conditional delivery ratio and cannot produce a latency sample.
+Initial `Profile` delivery is reported separately in the client log and is excluded from recurring latency/rate
+statistics. Event outliers are classified against the IQR threshold of their own event type and use the corresponding
+type-specific sample kind in the outliers file.
 
 ## QD monitoring statistics
 

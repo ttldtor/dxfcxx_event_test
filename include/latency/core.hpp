@@ -17,6 +17,8 @@ enum class EventKind : char {
     QUOTE = 'Q',
     /** A Trade event. */
     TRADE = 'T',
+    /** A TradeETH event. */
+    TRADE_ETH = 'E',
     /** A Summary event. */
     SUMMARY = 'S'
 };
@@ -40,7 +42,7 @@ struct TaskPattern {
     std::chrono::milliseconds publishPeriod{std::chrono::seconds{1}};
 
     /**
-     * Returns the total number of events generated in each batch.
+     * Returns the total number of recurring events generated in each batch.
      *
      * @return The sum of all item quantities.
      */
@@ -61,6 +63,9 @@ struct TaskPattern {
      */
     [[nodiscard]] std::vector<std::string> symbols(EventKind kind) const;
 
+    /** Returns the shared symbol universe used by the combined subscription and initial Profile state. */
+    [[nodiscard]] std::vector<std::string> symbols() const;
+
     /**
      * Looks up the configured quantity for an event type.
      *
@@ -69,7 +74,10 @@ struct TaskPattern {
      */
     [[nodiscard]] std::optional<std::size_t> quantity(EventKind kind) const;
 
-    /** Returns the configured event rate, excluding the one marker record per batch. */
+    /** Returns the number of instruments in the shared symbol universe. */
+    [[nodiscard]] std::size_t symbolCount() const;
+
+    /** Returns the configured recurring event rate, excluding initial events and the marker record. */
     [[nodiscard]] double nominalEventsPerSecond() const;
 
     /** Returns the number of publication slots intersecting a positive duration, rounded up. */
@@ -90,7 +98,7 @@ struct ParseError {
 /**
  * Parses a subscription task in the `SUB:<type><quantity>[;...][@<period>]` DSL.
  *
- * Supported type codes are `Q`, `T`, and `S`. Each type may occur at most once and its quantity must be positive.
+ * Supported type codes are `Q`, `T`, `E`, and `S`. Each type may occur at most once and its quantity must be positive.
  *
  * @param text The task text, for example `SUB:Q100;S1;T5@100ms`.
  * @return The parsed pattern, or a positional parse error.

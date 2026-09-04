@@ -43,18 +43,33 @@ const std::filesystem::path FIXTURE_DIRECTORY{LATENCY_TEST_DATA_DIR};
 } // namespace
 
 TEST_CASE("task and duration parsing") {
-    const auto parsed = parseTask("SUB:Q100;S1;T5");
+    const auto parsed = parseTask("SUB:Q100;S1;T5;E4");
 
     REQUIRE(parsed.has_value());
-    CHECK(parsed->toString() == "SUB:Q100;S1;T5");
-    CHECK(parsed->eventCount() == 106);
+    CHECK(parsed->toString() == "SUB:Q100;S1;T5;E4");
+    CHECK(parsed->eventCount() == 110);
+    CHECK(parsed->symbolCount() == 100);
     CHECK(parsed->publishPeriod == 1s);
 
     const auto quotes = parsed->symbols(EventKind::QUOTE);
 
     REQUIRE(quotes.size() == 100);
-    CHECK(quotes.front() == "Q00");
-    CHECK(quotes.back() == "Q99");
+    CHECK(quotes.front() == "SYM00");
+    CHECK(quotes.back() == "SYM99");
+
+    const auto symbols = parsed->symbols();
+
+    REQUIRE(symbols.size() == 100);
+    CHECK(symbols.front() == "SYM00");
+    CHECK(symbols.back() == "SYM99");
+
+    const auto differentlySized = parseTask("SUB:Q375;T37");
+
+    REQUIRE(differentlySized.has_value());
+    CHECK(differentlySized->symbols(EventKind::QUOTE).front() == "SYM000");
+    CHECK(differentlySized->symbols(EventKind::TRADE).front() == "SYM000");
+    CHECK(differentlySized->symbols(EventKind::TRADE).back() == "SYM036");
+    CHECK(differentlySized->symbols().back() == "SYM374");
 
     const auto cadence = parseTask("SUB:Q500;T500;S500@10ms");
 
@@ -73,6 +88,7 @@ TEST_CASE("task and duration parsing") {
     CHECK_FALSE(parseTask("SUB:Q0").has_value());
     CHECK_FALSE(parseTask("SUB:Q1;Q2").has_value());
     CHECK_FALSE(parseTask("SUB:X1").has_value());
+    CHECK_FALSE(parseTask("SUB:P1").has_value());
     CHECK_FALSE(parseTask("SUB:Q1junk").has_value());
     CHECK_FALSE(parseTask("SUB:Q1;").has_value());
     CHECK_FALSE(parseTask("SUB:Q1@").has_value());
@@ -174,7 +190,7 @@ TEST_CASE("repeated benchmark comparison files") {
     std::ifstream report{repeatedFixture.path() / "REPORT.md"};
     const std::string reportText{std::istreambuf_iterator<char>{report}, {}};
 
-    CHECK(reportText.contains("| example | 3 |"));
+    CHECK(reportText.contains("| example | stream-feed | 3 |"));
 }
 
 TEST_CASE("invalid monitoring inputs are rejected") {
