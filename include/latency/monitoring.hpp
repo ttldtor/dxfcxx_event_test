@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace latency {
@@ -88,6 +89,28 @@ struct MonitoringAnalysis {
     std::vector<MonitoringAggregate> aggregates;
 };
 
+/** A benchmark output prefix split into a scenario and repetition number. */
+struct BenchmarkProfile {
+    std::string scenario;
+    std::size_t repetition{1};
+
+    friend bool operator==(const BenchmarkProfile &, const BenchmarkProfile &) = default;
+};
+
+/** Minimum, median, and maximum across independent benchmark runs. */
+struct RunComparison {
+    std::size_t runs{};
+    double minimum{};
+    double median{};
+    double maximum{};
+};
+
+/** Splits `q1k-r02` into scenario `q1k` and repetition `2`; an absent suffix means repetition 1. */
+BenchmarkProfile parseBenchmarkProfile(std::string_view profile);
+
+/** Calculates a run-level range and Excel-compatible median. */
+RunComparison compareRuns(std::vector<double> values);
+
 /**
  * Analyzes matching latency summaries and QD server/client logs in a benchmark directory.
  *
@@ -107,5 +130,9 @@ std::expected<MonitoringAnalysis, std::string> analyzeMonitoringDirectory(const 
  */
 std::expected<void, std::string> writeMonitoringAnalysis(const std::filesystem::path &runDirectory,
                                                          const MonitoringAnalysis &analysis);
+
+/** Writes latency/monitoring repetition comparisons and a concise Markdown report. */
+std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem::path &runDirectory,
+                                                          const MonitoringAnalysis &analysis);
 
 } // namespace latency

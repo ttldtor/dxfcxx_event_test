@@ -269,7 +269,7 @@ class Collector {
     public:
     struct Window {
         std::vector<latency::Sample> events, batches;
-        std::size_t callbacks{}, negative{}, missing{};
+        std::size_t callbacks{}, negative{}, missing{}, pending{};
     };
     struct Totals {
         std::array<std::vector<std::int64_t>, EVENT_KINDS.size()> eventsByKind;
@@ -408,7 +408,7 @@ class Collector {
             return item.first < cutoffSecond;
         });
         Window result{std::move(eventWindow_), std::move(batchWindow_), callbacksWindow_, negativeWindow_,
-                      missingWindow_};
+                      missingWindow_, pending_.size()};
         eventWindow_.clear();
         batchWindow_.clear();
         callbacksWindow_ = negativeWindow_ = missingWindow_ = 0;
@@ -486,9 +486,11 @@ class Reporter {
         std::cout << " us\n";
     }
     void writeSummary(std::int64_t start, std::int64_t end, std::string_view kind, const latency::Statistics &s,
-                      std::size_t expectedPerBatch, std::size_t callbacks, std::size_t negative, std::size_t missing) {
+                      std::size_t expectedPerBatch, std::size_t callbacks, std::size_t negative, std::size_t missing,
+                      std::size_t pending) {
         summary_ << latency::utcTimestamp(start) << ',' << latency::utcTimestamp(end) << ',' << kind << ',' << s.count
-                 << ',' << expectedPerBatch << ',' << callbacks << ',' << negative << ',' << missing << ','
+                 << ',' << expectedPerBatch << ',' << callbacks << ',' << negative << ',' << missing << ',' << pending
+                 << ','
                  << microseconds(s.minimum) << ',' << microseconds(s.mean) << ',' << microseconds(s.p50) << ','
                  << microseconds(s.p90) << ',' << microseconds(s.p95) << ',' << microseconds(s.p99) << ','
                  << microseconds(s.p999) << ',' << microseconds(s.maximum) << ',' << microseconds(s.q1) << ','
@@ -536,7 +538,8 @@ class Reporter {
         }
 
         summary_ << "window_start_utc,window_end_utc,sample_kind,samples,expected_per_batch,callbacks,clock_anomalies,"
-                    "missing_batches,min_us,mean_us,p50_us,p90_us,p95_us,p99_us,p999_us,max_us,q1_us,q3_us,iqr_us,"
+                    "missing_batches,pending_batches,min_us,mean_us,p50_us,p90_us,p95_us,p99_us,p999_us,max_us,q1_us,"
+                    "q3_us,iqr_us,"
                     "outlier_threshold_us,outliers\n";
         outliers_ << "observed_at_utc,sample_kind,event_type,symbol,publish_time_ns,latency_ns,window_threshold_ns\n";
         std::cout << "Writing " << summaryPath << " and " << outliersPath << '\n';
@@ -557,7 +560,7 @@ class Reporter {
         printStats("event", eventStats);
 
         writeSummary(start, end, "event", eventStats, expectedEventsPerBatch_, data.callbacks, data.negative,
-                     data.missing);
+                     data.missing, data.pending);
 
         for (const auto kind : EVENT_KINDS) {
             const auto sampleKind = eventSampleKind(kind);
@@ -565,12 +568,12 @@ class Reporter {
 
             printStats(sampleKind, stats);
             writeSummary(start, end, sampleKind, stats, expectedEventsByKind_[eventKindIndex(kind)], data.callbacks,
-                         data.negative, data.missing);
+                         data.negative, data.missing, data.pending);
             writeOutliers(data.events, sampleKind, stats, kind);
         }
 
         printStats("batch", batchStats);
-        writeSummary(start, end, "batch", batchStats, 1, data.callbacks, data.negative, data.missing);
+        writeSummary(start, end, "batch", batchStats, 1, data.callbacks, data.negative, data.missing, data.pending);
         writeOutliers(data.batches, "batch", batchStats);
         summary_.flush();
         outliers_.flush();
@@ -585,7 +588,7 @@ class Reporter {
         printStats("event", eventStats);
 
         writeSummary(runStart_, end, "event-total", eventStats, expectedEventsPerBatch_, totals.callbacks,
-                     totals.negative, totals.missing);
+                     totals.negative, totals.missing, totals.pending);
 
         for (const auto kind : EVENT_KINDS) {
             const auto sampleKind = std::string{eventSampleKind(kind)} + "-total";
@@ -593,11 +596,12 @@ class Reporter {
 
             printStats(sampleKind, stats);
             writeSummary(runStart_, end, sampleKind, stats, expectedEventsByKind_[eventKindIndex(kind)],
-                         totals.callbacks, totals.negative, totals.missing);
+                         totals.callbacks, totals.negative, totals.missing, totals.pending);
         }
 
         printStats("batch", batchStats);
-        writeSummary(runStart_, end, "batch-total", batchStats, 1, totals.callbacks, totals.negative, totals.missing);
+        writeSummary(runStart_, end, "batch-total", batchStats, 1, totals.callbacks, totals.negative, totals.missing,
+                     totals.pending);
     }
 };
 

@@ -58,6 +58,14 @@ int main(int argc, char **argv) {
     check(flat.iqr == 0 && flat.outlierCount == 1, "zero IQR behavior");
     check(calculateStatistics({}).count == 0, "empty statistics");
     check(nanosecondsToMicroseconds(123'456) == 123.456, "nanoseconds to microseconds");
+    check(parseBenchmarkProfile("q50k-t50k-s50k-r03") == BenchmarkProfile{"q50k-t50k-s50k", 3},
+          "benchmark repetition suffix parsed");
+    check(parseBenchmarkProfile("legacy-profile") == BenchmarkProfile{"legacy-profile", 1},
+          "legacy benchmark profile supported");
+    const auto runComparison = compareRuns({9, 1, 5, 3});
+    check(runComparison.runs == 4 && runComparison.minimum == 1 && runComparison.median == 4 &&
+              runComparison.maximum == 9,
+          "run comparison calculated");
 
     if (argc == 2) {
         const auto fixture = std::filesystem::path{argv[1]};
@@ -78,6 +86,34 @@ int main(int argc, char **argv) {
             });
             check(cpu != analysis->aggregates.end() && cpu->samples == 2 && std::abs(cpu->mean - 0.15) < 0.0001,
                   "monitoring aggregate calculated");
+
+            const auto repeatedFixture = std::filesystem::temp_directory_path() / "latency-repeated-fixture";
+            std::error_code repeatedError;
+            std::filesystem::remove_all(repeatedFixture, repeatedError);
+            std::filesystem::create_directories(repeatedFixture);
+            for (const auto repetition : {"r01", "r02", "r03"}) {
+                const auto profile = std::string{"example-"} + repetition;
+                std::filesystem::copy_file(fixture / "example-summary.csv",
+                                           repeatedFixture / (profile + "-summary.csv"));
+                std::filesystem::copy_file(fixture / "example-server.log",
+                                           repeatedFixture / (profile + "-server.log"));
+                std::filesystem::copy_file(fixture / "example-client.log",
+                                           repeatedFixture / (profile + "-client.log"));
+            }
+            const auto repeated = analyzeMonitoringDirectory(repeatedFixture, std::chrono::seconds{10});
+            check(repeated.has_value(), "repeated monitoring fixture parses");
+            if (repeated) {
+                check(writeBenchmarkComparison(repeatedFixture, *repeated).has_value(),
+                      "benchmark comparison files written");
+                check(std::filesystem::file_size(repeatedFixture / "latency-runs.csv") > 0,
+                      "latency run details produced");
+                check(std::filesystem::file_size(repeatedFixture / "monitoring-comparison.csv") > 0,
+                      "monitoring comparison produced");
+                std::ifstream report{repeatedFixture / "REPORT.md"};
+                const std::string reportText{std::istreambuf_iterator<char>{report}, {}};
+                check(reportText.contains("| example | 3 |"), "report groups benchmark repetitions");
+            }
+            std::filesystem::remove_all(repeatedFixture, repeatedError);
         }
 
         check(!analyzeMonitoringDirectory(fixture / "missing", std::chrono::seconds{10}),

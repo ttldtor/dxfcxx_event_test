@@ -95,6 +95,42 @@ profile/process aggregates for intervals wholly inside the measurement phase to 
 timestamps have no UTC offset and are interpreted in the analyzer process's local time zone; analyze moved logs with
 the same `TZ` setting as the machine that produced them.
 
+## Repeated local benchmark suite
+
+The repository includes native launchers for a longer comparison suite. They run three repetitions of four mixed
+profiles: 3,000, 15,000, 30,000, and 150,000 events per second. The largest profile contains 50,000 Quote, 50,000
+Trade, and 50,000 Summary events. Every run uses a one-minute warm-up, a ten-minute measurement, ten-second windows,
+and a fresh server/client pair. Profile order rotates between repetitions and a 30-second cool-down separates runs.
+
+Build the Release binaries first, then run the launcher for the host operating system. On Windows:
+
+```powershell
+.\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release
+```
+
+On Linux or macOS:
+
+```sh
+bash ./tools/run-benchmark.sh --binary-directory ./build
+```
+
+Use `-DryRun` or `--dry-run` to validate the suite and display all planned commands without starting a benchmark.
+Both launchers read `tools/benchmark-suite.conf`; pass `-Config` or `--config` to use a modified suite. Results are
+written below `benchmark-results/<UTC timestamp>/`. A full default run takes approximately two hours and twenty
+minutes plus any machine-dependent startup overhead.
+
+Each output prefix includes its repetition, for example `q50k-t50k-s50k-r02`. The analyzer additionally writes
+`latency-runs.csv`, `latency-comparison.csv`, `monitoring-comparison.csv`, and a concise `REPORT.md`. Comparison CSVs
+contain the minimum, median, and maximum of run-level values; original summaries and logs remain available for more
+detailed analysis. A failed run is recorded in `run-manifest.csv`, its partial CSV files are preserved with a
+`.partial.csv` suffix, and the remaining profiles still run.
+
+The client retains exact latency values to calculate whole-run percentiles. The 150,000 events/s profile records 90
+million event samples over ten minutes and can temporarily require several gigabytes of memory while final totals
+are copied and sorted. Run the suite on an otherwise idle machine with sufficient RAM. The launchers are intended
+for local native measurements; GitHub Actions only performs their dry-run validation because hosted-runner latency
+is not treated as benchmark data.
+
 ## Docker
 
 The Linux and Windows images each contain `latency_server`, `latency_client`, and `latency_analyzer`. There is no fixed

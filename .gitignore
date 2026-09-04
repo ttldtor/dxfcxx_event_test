@@ -46,5 +46,6 @@ cmake-build-*/
 # Generated benchmark artifacts. Keep reports and aggregate CSV summaries trackable.
 /benchmark-results/**/smoke*/
 /benchmark-results/**/*-outliers.csv
+/benchmark-results/**/*-outliers.partial.csv
 /benchmark-results/**/*.log
 /benchmark-results/**/server-session-notes.txt

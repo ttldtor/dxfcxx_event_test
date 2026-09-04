@@ -73,8 +73,15 @@ int main(int argc, char **argv) {
             throw std::runtime_error(written.error());
         }
 
+        auto comparison = latency::writeBenchmarkComparison(config.runDirectory, *analysis);
+
+        if (!comparison) {
+            throw std::runtime_error(comparison.error());
+        }
+
         std::cout << "Wrote " << (config.runDirectory / "monitoring.csv").string() << '\n'
-                  << "Wrote " << (config.runDirectory / "monitoring-summary.csv").string() << '\n';
+                  << "Wrote " << (config.runDirectory / "monitoring-summary.csv").string() << '\n'
+                  << "Wrote benchmark comparison CSV files and REPORT.md\n";
 
         return 0;
     } catch (const std::exception &error) {
