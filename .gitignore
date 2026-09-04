@@ -49,3 +49,4 @@ cmake-build-*/
 /benchmark-results/**/*-outliers.partial.csv
 /benchmark-results/**/*.log
 /benchmark-results/**/server-session-notes.txt
+/SUPDXFD-22805/
