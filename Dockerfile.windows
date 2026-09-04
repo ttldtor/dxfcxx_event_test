@@ -1,0 +1,48 @@
+# escape=`
+
+ARG WINDOWS_VERSION=ltsc2025
+
+FROM mcr.microsoft.com/dotnet/framework/runtime:4.8.1-windowsservercore-ltsc2025 AS build
+
+SHELL ["cmd", "/S", "/C"]
+
+RUN curl.exe -SL --output C:\vs_buildtools.exe https://aka.ms/vs/17/release/vs_buildtools.exe `
+    && (start /w C:\vs_buildtools.exe --quiet --wait --norestart --nocache `
+        --installPath "C:\BuildTools" `
+        --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        --add Microsoft.VisualStudio.Component.VC.CMake.Project `
+        --add Microsoft.VisualStudio.Component.Windows11SDK.26100 `
+        || if "%ERRORLEVEL%"=="3010" exit /b 0) `
+    && del /q C:\vs_buildtools.exe `
+    && curl.exe -SL --output C:\vc_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe
+
+WORKDIR C:\src
+COPY CMakeLists.txt C:\src\
+COPY include C:\src\include
+COPY src C:\src\src
+
+RUN call C:\BuildTools\Common7\Tools\VsDevCmd.bat -arch=amd64 `
+    && cmake -S C:\src -B C:\build -G Ninja `
+        -DCMAKE_BUILD_TYPE=Release `
+        -DCMAKE_INSTALL_PREFIX=C:\install `
+        -DBUILD_TESTING=OFF `
+        -DDXFCXX_BUILD_DOC=OFF `
+        -DDXFCXX_BUILD_SAMPLES=OFF `
+        -DDXFCXX_BUILD_TOOLS=OFF `
+        -DDXFCXX_INSTALL=OFF `
+        -DDXFCXX_LINK_STATIC_RUNTIME=ON `
+    && cmake --build C:\build --parallel `
+    && cmake --install C:\build
+
+FROM mcr.microsoft.com/windows/servercore:${WINDOWS_VERSION} AS runtime
+
+COPY --from=build C:\vc_redist.x64.exe C:\vc_redist.x64.exe
+RUN C:\vc_redist.x64.exe /install /quiet /norestart `
+    && del /q C:\vc_redist.x64.exe
+
+COPY --from=build C:\install\bin C:\latency\bin
+ENV PATH="C:\latency\bin;${PATH}"
+WORKDIR C:\work
+
+EXPOSE 7400
+CMD ["latency_client.exe", "--help"]

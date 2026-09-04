@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  native:
+    name: Native / ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            runner: windows-2022
+          - name: Linux
+            runner: ubuntu-24.04
+            options: -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14
+          - name: macOS ARM64
+            runner: macos-15
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Configure
+        run: >-
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DDXFCXX_BUILD_DOC=OFF
+          -DDXFCXX_BUILD_SAMPLES=OFF
+          -DDXFCXX_BUILD_TOOLS=OFF
+          ${{ matrix.options }}
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  linux-container:
+    name: Linux container / ${{ matrix.platform }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: latency-test:${{ strategy.job-index }}
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+      - name: Smoke-test commands
+        run: |
+          docker run --rm latency-test:${{ strategy.job-index }} latency_server --help
+          docker run --rm latency-test:${{ strategy.job-index }} latency_client --help
+          docker run --rm latency-test:${{ strategy.job-index }} latency_analyzer --help
+
+  linux-container-end-to-end:
+    name: Linux container / end-to-end
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build image
+        run: docker build --tag latency-test:ci .
+      - name: Run server and client
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/latency-output"
+          docker network create latency-test
+          docker run --detach --rm --name latency-server --network latency-test \
+            latency-test:ci latency_server --address :7400 --monitoring-stat 1s
+          sleep 2
+          docker run --rm --network latency-test \
+            --mount "type=bind,source=$RUNNER_TEMP/latency-output,target=/work" \
+            latency-test:ci latency_client --address latency-server:7400 \
+              --task "SUB:Q10;S10;T10" --warmup 2s --duration 3s --window 1s \
+              --batch-timeout 2s --monitoring-stat 1s --output smoke \
+            > "$RUNNER_TEMP/latency-output/smoke-client.log" 2>&1
+          docker logs latency-server > "$RUNNER_TEMP/latency-output/smoke-server.log" 2>&1
+          test -s "$RUNNER_TEMP/latency-output/smoke-summary.csv"
+          docker run --rm \
+            --mount "type=bind,source=$RUNNER_TEMP/latency-output,target=/work" \
+            latency-test:ci latency_analyzer --run-directory /work --monitoring-period 1s
+          test -s "$RUNNER_TEMP/latency-output/monitoring-summary.csv"
+      - name: Stop server
+        if: always()
+        run: |
+          docker stop latency-server || true
+          docker network rm latency-test || true

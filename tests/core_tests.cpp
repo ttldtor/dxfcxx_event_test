@@ -1,8 +1,12 @@
 #include "latency/core.hpp"
+#include "latency/monitoring.hpp"
 
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
+#include <ranges>
 #include <string>
 #include <vector>
 
@@ -16,7 +20,7 @@ void check(bool condition, std::string_view message) {
 }
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
     using namespace latency;
     const auto parsed = parseTask("SUB:Q100;S1;T5");
     check(parsed.has_value(), "valid mixed task parses");
@@ -54,5 +58,45 @@ int main() {
     check(flat.iqr == 0 && flat.outlierCount == 1, "zero IQR behavior");
     check(calculateStatistics({}).count == 0, "empty statistics");
     check(nanosecondsToMicroseconds(123'456) == 123.456, "nanoseconds to microseconds");
+
+    if (argc == 2) {
+        const auto fixture = std::filesystem::path{argv[1]};
+        const auto analysis = analyzeMonitoringDirectory(fixture, std::chrono::seconds{10});
+        check(analysis.has_value(), "monitoring fixture parses");
+
+        if (analysis) {
+            check(analysis->samples.size() == 4, "all monitoring intervals parsed");
+            check(analysis->samples.front().subscription == 3'001, "numbers with separators parsed");
+            check(analysis->samples.front().readDataRps == 3'002, "read details parsed");
+            check(!analysis->samples.front().sticky, "missing optional metric preserved");
+            check(!analysis->aggregates.empty(), "measurement aggregates produced");
+            const auto cpu = std::ranges::find_if(analysis->aggregates, [](const MonitoringAggregate &aggregate) {
+                return aggregate.profile == "example" && aggregate.process == "client" &&
+                       aggregate.metric == "cpu_percent";
+            });
+            check(cpu != analysis->aggregates.end() && cpu->samples == 2 && std::abs(cpu->mean - 0.15) < 0.0001,
+                  "monitoring aggregate calculated");
+        }
+
+        check(!analyzeMonitoringDirectory(fixture / "missing", std::chrono::seconds{10}),
+              "missing monitoring directory rejected");
+        check(!analyzeMonitoringDirectory(fixture, std::chrono::milliseconds::zero()),
+              "zero monitoring period rejected");
+
+        const auto invalidFixture = std::filesystem::temp_directory_path() / "latency-monitoring-invalid-fixture";
+        std::error_code filesystemError;
+        std::filesystem::remove_all(invalidFixture, filesystemError);
+        std::filesystem::create_directories(invalidFixture);
+        std::filesystem::copy_file(fixture / "example-summary.csv", invalidFixture / "example-summary.csv");
+        std::filesystem::copy_file(fixture / "example-server.log", invalidFixture / "example-server.log");
+        check(!analyzeMonitoringDirectory(invalidFixture, std::chrono::seconds{10}), "missing process log rejected");
+        std::ofstream{invalidFixture / "example-summary.csv", std::ios::trunc} << "invalid,columns\n";
+        check(!analyzeMonitoringDirectory(invalidFixture, std::chrono::seconds{10}),
+              "malformed latency summary rejected");
+        std::filesystem::remove_all(invalidFixture, filesystemError);
+    } else {
+        check(false, "monitoring fixture path argument provided");
+    }
+
     return failures ? 1 : 0;
 }

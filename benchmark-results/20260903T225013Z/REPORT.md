@@ -1,6 +1,6 @@
 # Local latency benchmark report
 
-Run directory: `20260903T225013Z` (UTC). The benchmark was executed locally on 2026-09-04 Moscow time.
+Run directory: `20260903T225013Z` (UTC).
 
 ## Result
 

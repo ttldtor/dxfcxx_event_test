@@ -1,0 +1,2 @@
+I 260102 090010.000 {latency-server} Subscription: 3,001; Storage: 0; Buffer: 0; Dropped: 0; Read: 1 Bps; Write: 84,000 Bps (data 3,002 rps lag 70 us); CPU: 0.05%
+I 260102 090020.000 {latency-server} Subscription: 3,001; Storage: 0; Buffer: 0; Dropped: 0; Read: 1 Bps; Write: 85,000 Bps (data 3,000 rps lag 75 us); CPU: 0.07%

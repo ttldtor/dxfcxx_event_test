@@ -1,6 +1,6 @@
 # Local latency benchmark with QD monitoring
 
-Run directory: `20260903T233513Z` (UTC). The benchmark was executed locally on 2026-09-04 Moscow time.
+Run directory: `20260903T233513Z` (UTC).
 
 ## Result
 
