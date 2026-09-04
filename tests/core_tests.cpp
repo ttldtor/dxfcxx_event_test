@@ -68,6 +68,8 @@ int main(int argc, char **argv) {
             check(analysis->samples.size() == 4, "all monitoring intervals parsed");
             check(analysis->samples.front().subscription == 3'001, "numbers with separators parsed");
             check(analysis->samples.front().readDataRps == 3'002, "read details parsed");
+            check(analysis->samples.front().readDataLagUs == -800, "negative numbers parsed");
+            check(analysis->samples.front().cpuPercent == 0.1, "fractional numbers parsed");
             check(!analysis->samples.front().sticky, "missing optional metric preserved");
             check(!analysis->aggregates.empty(), "measurement aggregates produced");
             const auto cpu = std::ranges::find_if(analysis->aggregates, [](const MonitoringAggregate &aggregate) {
@@ -90,9 +92,12 @@ int main(int argc, char **argv) {
         std::filesystem::copy_file(fixture / "example-summary.csv", invalidFixture / "example-summary.csv");
         std::filesystem::copy_file(fixture / "example-server.log", invalidFixture / "example-server.log");
         check(!analyzeMonitoringDirectory(invalidFixture, std::chrono::seconds{10}), "missing process log rejected");
-        std::ofstream{invalidFixture / "example-summary.csv", std::ios::trunc} << "invalid,columns\n";
+        std::filesystem::copy_file(fixture / "example-client.log", invalidFixture / "example-client.log");
+        std::ofstream{invalidFixture / "example-summary.csv", std::ios::trunc}
+            << "window_start_utc,window_end_utc,sample_kind,expected_per_batch\n"
+               "2026-01-02T00:00:00Z,2026-01-02T00:01:00Z,event,3000junk\n";
         check(!analyzeMonitoringDirectory(invalidFixture, std::chrono::seconds{10}),
-              "malformed latency summary rejected");
+              "number with trailing characters rejected");
         std::filesystem::remove_all(invalidFixture, filesystemError);
     } else {
         check(false, "monitoring fixture path argument provided");

@@ -2,13 +2,13 @@
 
 #include <algorithm>
 #include <array>
-#include <charconv>
 #include <cmath>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
 #include <limits>
+#include <locale>
 #include <map>
 #include <numeric>
 #include <regex>
@@ -87,10 +87,15 @@ std::vector<std::string> parseCsvRow(std::string_view line) {
 
 std::expected<double, std::string> parseNumber(std::string text) {
     std::erase(text, ',');
-    double value{};
-    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    std::istringstream input{text};
 
-    if (error != std::errc{} || end != text.data() + text.size()) {
+    input.imbue(std::locale::classic());
+
+    double value{};
+
+    input >> std::noskipws >> value;
+
+    if (!input || input.peek() != std::char_traits<char>::eof()) {
         return std::unexpected("invalid number: " + text);
     }
 

@@ -1,2 +1,2 @@
-I 260102 090010.000 {latency-client} Subscription: 3,001; Storage: 0; Buffer: 0; Dropped: 0; Read: 84,000 Bps (data 3,002 rps lag 800 us); Write: 1 Bps; rtt 750 us; CPU: 0.10%
+I 260102 090010.000 {latency-client} Subscription: 3,001; Storage: 0; Buffer: 0; Dropped: 0; Read: 84,000 Bps (data 3,002 rps lag -800 us); Write: 1 Bps; rtt 750 us; CPU: 0.10%
 I 260102 090020.000 {latency-client} Subscription: 3,001; Storage: 0; Buffer: 0; Dropped: 0; Read: 85,000 Bps (data 3,000 rps lag 900 us); Write: 1 Bps; rtt 800 us; CPU: 0.20%
