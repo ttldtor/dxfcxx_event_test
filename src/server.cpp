@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <csignal>
 #include <deque>
+#include <format>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -117,7 +118,7 @@ class Generator {
         const auto marker = active.events.back()->sharedAs<TextMessage>();
         marker->setTime(nowNs / 1'000'000);
         marker->setSequence(sequence);
-        marker->setText("LATENCY_BATCH:" + std::to_string(nowNs));
+        marker->setText(std::format("LATENCY_BATCH:{}", nowNs));
         const auto publishStart = std::chrono::steady_clock::now();
         const auto preparation = std::chrono::duration_cast<std::chrono::nanoseconds>(publishStart - preparationStart);
         publisher_->publishEvents(active.events);
@@ -139,13 +140,13 @@ class Generator {
 
         std::cout << std::fixed << std::setprecision(3) << "Generator summary " << active.command
                   << ": publications=" << active.publications << " skipped-deadlines=" << active.skippedDeadlines
-                  << " actual-batches/s=" << (elapsed > 0 ? active.publications / elapsed : 0)
-                  << " actual-events/s="
+                  << " actual-batches/s=" << (elapsed > 0 ? active.publications / elapsed : 0) << " actual-events/s="
                   << (elapsed > 0 ? active.publications * active.pattern.eventCount() / elapsed : 0)
                   << " preparation-ms(avg/max)=" << milliseconds(active.preparationTotal) / publications << '/'
-                  << milliseconds(active.preparationMaximum) << " publish-ms(avg/max)="
-                  << milliseconds(active.publishTotal) / publications << '/' << milliseconds(active.publishMaximum)
-                  << '\n' << std::flush;
+                  << milliseconds(active.preparationMaximum)
+                  << " publish-ms(avg/max)=" << milliseconds(active.publishTotal) / publications << '/'
+                  << milliseconds(active.publishMaximum) << '\n'
+                  << std::flush;
     }
 
     void run() {
@@ -174,9 +175,11 @@ class Generator {
                     // Windows timed condition-variable waits can be quantized to about 15.6 ms. Yielding near the
                     // deadline keeps 10 ms and 1 ms benchmark cadences portable without changing global timer state.
                     lock.unlock();
+
                     while (std::chrono::steady_clock::now() < nextTick) {
                         std::this_thread::yield();
                     }
+
                     lock.lock();
                 }
             }
@@ -185,6 +188,7 @@ class Generator {
                 if (active) {
                     logSummary(*active);
                 }
+
                 return;
             }
 
@@ -206,8 +210,8 @@ class Generator {
                             nextTick = std::chrono::steady_clock::now();
                             std::cout << "Started " << command.text << " (" << active->pattern.eventCount()
                                       << " events/batch, period=" << active->pattern.publishPeriod.count()
-                                      << " ms, nominal=" << active->pattern.nominalEventsPerSecond()
-                                      << " events/s)\n" << std::flush;
+                                      << " ms, nominal=" << active->pattern.nominalEventsPerSecond() << " events/s)\n"
+                                      << std::flush;
                         } catch (const std::exception &e) {
                             std::cerr << "Cannot start task: " << e.what() << '\n';
                         }
@@ -249,6 +253,7 @@ class Generator {
               run();
           }) {
     }
+
     ~Generator() {
         {
             std::lock_guard lock{mutex_};
@@ -261,6 +266,7 @@ class Generator {
             thread_.join();
         }
     }
+
     void enqueue(bool start, std::string text = {}) {
         {
             std::lock_guard lock{mutex_};
@@ -284,14 +290,15 @@ Config parseArgs(int argc, char **argv) {
         const std::string arg = argv[i];
 
         if (arg == "--help") {
-            std::cout << "Usage: latency_server [options]\n"
-                         "  --address :7400          default :7400\n"
-                         "  --monitoring-stat 10s    0 disables QD statistics\n";
+            std::cout << R"(Usage: latency_server [options]
+  --address :7400          default :7400
+  --monitoring-stat 10s    0 disables QD statistics
+)";
             std::exit(0);
         }
 
         if (i + 1 >= argc) {
-            throw std::invalid_argument("missing value for " + arg);
+            throw std::invalid_argument(std::format("missing value for {}", arg));
         }
 
         const std::string value = argv[++i];
@@ -307,21 +314,19 @@ Config parseArgs(int argc, char **argv) {
 
             config.monitoringStat = *period;
         } else {
-            throw std::invalid_argument("unknown argument: " + arg);
+            throw std::invalid_argument(std::format("unknown argument: {}", arg));
         }
     }
 
     return config;
 }
 
-std::string configureMonitoring(const std::optional<std::chrono::milliseconds> &period) {
+void configureMonitoring(const std::optional<std::chrono::milliseconds> &period) {
     const auto value = latency::monitoringPeriodPropertyValue(period);
 
     if (!System::setProperty(MONITORING_STAT_PROPERTY, value)) {
-        throw std::runtime_error("cannot set " + std::string{MONITORING_STAT_PROPERTY} + "=" + value);
+        throw std::runtime_error(std::format("cannot set {}={}", MONITORING_STAT_PROPERTY, value));
     }
-
-    return value;
 }
 } // namespace
 
@@ -332,13 +337,9 @@ int main(int argc, char **argv) {
     try {
         const auto config = parseArgs(argc, argv);
 
-        System::setProperty("dxscheme.nanoTime", "true");
-        const auto monitoringStat = configureMonitoring(config.monitoringStat);
-        const auto endpoint = DXEndpoint::newBuilder()
-                                  ->withRole(DXEndpoint::Role::PUBLISHER)
-                                  ->withName("latency-server")
-                                  ->withProperty(MONITORING_STAT_PROPERTY, monitoringStat)
-                                  ->build();
+        configureMonitoring(config.monitoringStat);
+        const auto endpoint =
+            DXEndpoint::newBuilder()->withRole(DXEndpoint::Role::PUBLISHER)->withName("latency-server")->build();
         const auto publisher = endpoint->getPublisher();
         Generator generator{publisher};
         const auto observable = publisher->getSubscription(TextMessage::TYPE);
@@ -365,7 +366,8 @@ int main(int argc, char **argv) {
         const auto listenerId = observable->addChangeListener(listener);
 
         endpoint->connect(config.address);
-        std::cout << "Latency server listening on " << config.address << ". Press Ctrl+C to stop.\n" << std::flush;
+        std::cout << std::format("Latency server listening on {}. Press Ctrl+C to stop.\n", config.address)
+                  << std::flush;
 
         while (!interrupted.load()) {
             std::this_thread::sleep_for(200ms);

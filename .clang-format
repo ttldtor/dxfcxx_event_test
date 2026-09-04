@@ -15,3 +15,12 @@ AllowShortLambdasOnASingleLine: None
 AllowShortLoopsOnASingleLine: false
 IndentAccessModifiers: false
 AccessModifierOffset: 0
+SeparateDefinitionBlocks: Always
+EmptyLineBeforeAccessModifier: LogicalBlock
+EmptyLineAfterAccessModifier: Never
+MaxEmptyLinesToKeep: 1
+KeepEmptyLines:
+  AtEndOfFile: false
+  AtStartOfBlock: false
+  AtStartOfFile: false
+InsertNewlineAtEOF: true

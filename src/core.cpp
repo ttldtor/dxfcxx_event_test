@@ -57,6 +57,7 @@ std::string TaskPattern::toString() const {
 
     if (publishPeriod != std::chrono::seconds{1}) {
         result.push_back('@');
+
         if (publishPeriod.count() % 1000 == 0) {
             result += std::to_string(publishPeriod.count() / 1000);
             result.push_back('s');
@@ -79,6 +80,7 @@ std::size_t TaskPattern::batchCount(std::chrono::milliseconds duration) const {
     }
 
     const auto periods = duration.count() / publishPeriod.count();
+
     return static_cast<std::size_t>(periods + (duration.count() % publishPeriod.count() != 0));
 }
 
@@ -189,14 +191,17 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
         if (periodText.empty()) {
             return std::unexpected(ParseError{separator + 1, "expected publish period"});
         }
+
         if (periodText.find('@') != std::string_view::npos) {
             return std::unexpected(ParseError{separator + 1 + periodText.find('@'), "duplicate publish period"});
         }
 
         const auto period = parseDuration(periodText);
+
         if (!period) {
             return std::unexpected(ParseError{separator + 1, period.error()});
         }
+
         task.publishPeriod = *period;
     }
 
@@ -314,7 +319,7 @@ std::expected<std::chrono::milliseconds, std::string> parseDuration(std::string_
 
     if (ec != std::errc{} || ptr != number.data() + number.size() || value <= 0 ||
         value > std::numeric_limits<std::int64_t>::max() / multiplier) {
-        return std::unexpected("invalid duration: " + std::string{text});
+        return std::unexpected(std::format("invalid duration: {}", text));
     }
 
     return std::chrono::milliseconds{value * multiplier};
@@ -344,7 +349,7 @@ std::string monitoringPeriodPropertyValue(const std::optional<std::chrono::milli
     const auto remainder = milliseconds % 1000;
 
     if (remainder == 0) {
-        return std::to_string(seconds) + "s";
+        return std::format("{}s", seconds);
     }
 
     auto fraction = std::format("{:03}", remainder);
@@ -353,6 +358,7 @@ std::string monitoringPeriodPropertyValue(const std::optional<std::chrono::milli
         fraction.pop_back();
     }
 
-    return std::to_string(seconds) + "." + fraction + "s";
+    return std::format("{}.{}s", seconds, fraction);
 }
+
 } // namespace latency

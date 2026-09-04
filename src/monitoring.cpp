@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <ctime>
+#include <format>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
@@ -127,7 +128,7 @@ std::expected<double, std::string> parseNumber(std::string text) {
     input >> std::noskipws >> value;
 
     if (!input || input.peek() != std::char_traits<char>::eof()) {
-        return std::unexpected("invalid number: " + text);
+        return std::unexpected(std::format("invalid number: {}", text));
     }
 
     return value;
@@ -145,15 +146,17 @@ std::optional<double> findNumber(const std::string &text, const std::string &pat
 
 std::time_t utcTime(std::tm *value) {
 #ifdef _WIN32
-    return _mkgmtime(value);
+    const auto result = _mkgmtime(value);
 #else
-    return timegm(value);
+    const auto result = timegm(value);
 #endif
+
+    return result;
 }
 
 std::expected<TimePoint, std::string> parseUtcTimestamp(std::string_view text) {
     if (text.size() < 20 || text[4] != '-' || text[7] != '-' || text[10] != 'T' || text[13] != ':' || text[16] != ':') {
-        return std::unexpected("invalid UTC timestamp: " + std::string{text});
+        return std::unexpected(std::format("invalid UTC timestamp: {}", text));
     }
 
     std::tm calendar{};
@@ -166,13 +169,13 @@ std::expected<TimePoint, std::string> parseUtcTimestamp(std::string_view text) {
         calendar.tm_min = std::stoi(std::string{text.substr(14, 2)});
         calendar.tm_sec = std::stoi(std::string{text.substr(17, 2)});
     } catch (const std::exception &) {
-        return std::unexpected("invalid UTC timestamp: " + std::string{text});
+        return std::unexpected(std::format("invalid UTC timestamp: {}", text));
     }
 
     const auto seconds = utcTime(&calendar);
 
     if (seconds == static_cast<std::time_t>(-1)) {
-        return std::unexpected("invalid UTC timestamp: " + std::string{text});
+        return std::unexpected(std::format("invalid UTC timestamp: {}", text));
     }
 
     std::chrono::nanoseconds fraction{};
@@ -193,7 +196,7 @@ std::expected<TimePoint, std::string> parseUtcTimestamp(std::string_view text) {
         auto parsed = parseNumber(digits);
 
         if (!parsed) {
-            return std::unexpected("invalid UTC timestamp: " + std::string{text});
+            return std::unexpected(std::format("invalid UTC timestamp: {}", text));
         }
 
         fraction = std::chrono::nanoseconds{static_cast<std::int64_t>(*parsed)};
@@ -204,7 +207,7 @@ std::expected<TimePoint, std::string> parseUtcTimestamp(std::string_view text) {
 
 std::expected<TimePoint, std::string> parseLocalLogTimestamp(const std::string &date, const std::string &time) {
     if (date.size() != 6 || time.size() != 10) {
-        return std::unexpected("invalid QD timestamp: " + date + " " + time);
+        return std::unexpected(std::format("invalid QD timestamp: {} {}", date, time));
     }
 
     std::tm calendar{};
@@ -219,13 +222,13 @@ std::expected<TimePoint, std::string> parseLocalLogTimestamp(const std::string &
         calendar.tm_sec = std::stoi(time.substr(4, 2));
         calendar.tm_isdst = -1;
     } catch (const std::exception &) {
-        return std::unexpected("invalid QD timestamp: " + date + " " + time);
+        return std::unexpected(std::format("invalid QD timestamp: {} {}", date, time));
     }
 
     const auto seconds = std::mktime(&calendar);
 
     if (seconds == static_cast<std::time_t>(-1)) {
-        return std::unexpected("invalid QD timestamp: " + date + " " + time);
+        return std::unexpected(std::format("invalid QD timestamp: {} {}", date, time));
     }
 
     const auto milliseconds = std::chrono::milliseconds{std::stoi(time.substr(7, 3))};
@@ -261,13 +264,13 @@ std::expected<Measurement, std::string> readMeasurement(const std::filesystem::p
     std::ifstream input{path};
 
     if (!input) {
-        return std::unexpected("cannot read latency summary: " + path.string());
+        return std::unexpected(std::format("cannot read latency summary: {}", path.string()));
     }
 
     std::string line;
 
     if (!std::getline(input, line)) {
-        return std::unexpected("empty latency summary: " + path.string());
+        return std::unexpected(std::format("empty latency summary: {}", path.string()));
     }
 
     const auto headings = parseCsvRow(line);
@@ -287,7 +290,7 @@ std::expected<Measurement, std::string> readMeasurement(const std::filesystem::p
     const auto nominalIndex = indexOf("nominal_events_per_second");
 
     if (!startIndex || !endIndex || !kindIndex || !expectedIndex) {
-        return std::unexpected("latency summary has no required columns: " + path.string());
+        return std::unexpected(std::format("latency summary has no required columns: {}", path.string()));
     }
 
     std::optional<Measurement> measurement;
@@ -295,6 +298,7 @@ std::expected<Measurement, std::string> readMeasurement(const std::filesystem::p
     while (std::getline(input, line)) {
         const auto columns = parseCsvRow(line);
         auto maximumIndex = std::max({*startIndex, *endIndex, *kindIndex, *expectedIndex});
+
         if (nominalIndex) {
             maximumIndex = std::max(maximumIndex, *nominalIndex);
         }
@@ -309,7 +313,7 @@ std::expected<Measurement, std::string> readMeasurement(const std::filesystem::p
         auto nominal = nominalIndex ? parseNumber(columns[*nominalIndex]) : expected;
 
         if (!start || !end || !expected || !nominal) {
-            return std::unexpected("invalid event row in latency summary: " + path.string());
+            return std::unexpected(std::format("invalid event row in latency summary: {}", path.string()));
         }
 
         if (!measurement) {
@@ -320,7 +324,7 @@ std::expected<Measurement, std::string> readMeasurement(const std::filesystem::p
     }
 
     if (!measurement) {
-        return std::unexpected("no event windows found in latency summary: " + path.string());
+        return std::unexpected(std::format("no event windows found in latency summary: {}", path.string()));
     }
 
     return *measurement;
@@ -332,7 +336,7 @@ readMonitoringLog(const std::filesystem::path &path, std::string profile, std::s
     std::ifstream input{path};
 
     if (!input) {
-        return std::unexpected("missing monitoring log: " + path.string());
+        return std::unexpected(std::format("missing monitoring log: {}", path.string()));
     }
 
     const std::regex linePattern{R"(^[A-Z]\s+([0-9]{6})\s+([0-9]{6}\.[0-9]{3}).*?\{([^}]+)\}\s+(Subscription:.*)$)"};
@@ -352,7 +356,7 @@ readMonitoringLog(const std::filesystem::path &path, std::string profile, std::s
         auto intervalEnd = parseLocalLogTimestamp(match[1].str(), match[2].str());
 
         if (!intervalEnd) {
-            return std::unexpected(intervalEnd.error() + " in " + path.string());
+            return std::unexpected(std::format("{} in {}", intervalEnd.error(), path.string()));
         }
 
         const auto intervalStart = previousEnd.value_or(*intervalEnd - monitoringPeriod);
@@ -431,7 +435,7 @@ std::expected<void, std::string> openOutput(std::ofstream &output, const std::fi
     output.open(path, std::ios::trunc);
 
     if (!output) {
-        return std::unexpected("cannot write output: " + path.string());
+        return std::unexpected(std::format("cannot write output: {}", path.string()));
     }
 
     return {};
@@ -442,18 +446,19 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
     std::ifstream input{path};
 
     if (!input) {
-        return std::unexpected("cannot read latency summary: " + path.string());
+        return std::unexpected(std::format("cannot read latency summary: {}", path.string()));
     }
 
     std::string line;
 
     if (!std::getline(input, line)) {
-        return std::unexpected("empty latency summary: " + path.string());
+        return std::unexpected(std::format("empty latency summary: {}", path.string()));
     }
 
     const auto headings = parseCsvRow(line);
     const auto indexOf = [&](std::string_view name) -> std::optional<std::size_t> {
         const auto found = std::ranges::find(headings, name);
+
         return found == headings.end() ? std::nullopt
                                        : std::optional{static_cast<std::size_t>(found - headings.begin())};
     };
@@ -474,12 +479,14 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
     const auto p999Index = indexOf("p999_us");
     const auto maxIndex = indexOf("max_us");
     const auto outliersIndex = indexOf("outliers");
-    const std::array required{kindIndex, samplesIndex, expectedIndex, callbacksIndex, clockIndex, missingIndex,
-                              minIndex,  meanIndex,    p50Index,      p90Index,       p95Index, p99Index,
-                              p999Index, maxIndex,     outliersIndex};
+    const std::array required{kindIndex,    samplesIndex, expectedIndex, callbacksIndex, clockIndex,
+                              missingIndex, minIndex,     meanIndex,     p50Index,       p90Index,
+                              p95Index,     p99Index,     p999Index,     maxIndex,       outliersIndex};
 
-    if (std::ranges::any_of(required, [](const auto &index) { return !index; })) {
-        return std::unexpected("latency summary has no comparison columns: " + path.string());
+    if (std::ranges::any_of(required, [](const auto &index) {
+            return !index;
+        })) {
+        return std::unexpected(std::format("latency summary has no comparison columns: {}", path.string()));
     }
 
     std::vector<LatencyRunRow> rows;
@@ -494,15 +501,16 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
 
         const auto number = [&](std::optional<std::size_t> index) -> std::expected<double, std::string> {
             if (!index || columns.size() <= *index) {
-                return std::unexpected("missing value in latency summary: " + path.string());
+                return std::unexpected(std::format("missing value in latency summary: {}", path.string()));
             }
+
             return parseNumber(columns[*index]);
         };
-        auto values = std::array{
-            number(samplesIndex),  number(expectedIndex), number(callbacksIndex), number(clockIndex),
-            number(missingIndex),  number(minIndex),      number(meanIndex),      number(p50Index),
-            number(p90Index),      number(p95Index),      number(p99Index),       number(p999Index),
-            number(maxIndex),      number(outliersIndex)};
+        auto values =
+            std::array{number(samplesIndex), number(expectedIndex), number(callbacksIndex), number(clockIndex),
+                       number(missingIndex), number(minIndex),      number(meanIndex),      number(p50Index),
+                       number(p90Index),     number(p95Index),      number(p99Index),       number(p999Index),
+                       number(maxIndex),     number(outliersIndex)};
 
         for (const auto &value : values) {
             if (!value) {
@@ -511,42 +519,32 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
         }
 
         double pending = 0;
+
         if (pendingIndex) {
             auto value = number(pendingIndex);
+
             if (!value) {
                 return std::unexpected(value.error());
             }
+
             pending = *value;
         }
 
         double nominal = *values[1];
+
         if (nominalIndex) {
             auto value = number(nominalIndex);
+
             if (!value) {
                 return std::unexpected(value.error());
             }
+
             nominal = *value;
         }
 
-        rows.push_back(LatencyRunRow{profile,
-                                     identity,
-                                     columns[*kindIndex],
-                                     nominal,
-                                     *values[0],
-                                     *values[1],
-                                     *values[2],
-                                     *values[3],
-                                     *values[4],
-                                     pending,
-                                     *values[5],
-                                     *values[6],
-                                     *values[7],
-                                     *values[8],
-                                     *values[9],
-                                     *values[10],
-                                     *values[11],
-                                     *values[12],
-                                     *values[13]});
+        rows.push_back(LatencyRunRow{profile, identity, columns[*kindIndex], nominal, *values[0], *values[1],
+                                     *values[2], *values[3], *values[4], pending, *values[5], *values[6], *values[7],
+                                     *values[8], *values[9], *values[10], *values[11], *values[12], *values[13]});
     }
 
     const auto batch = std::ranges::find(rows, "batch-total", &LatencyRunRow::sampleKind);
@@ -556,6 +554,7 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
         if (row.sampleKind == "batch-total") {
             row.nominalEventsPerSecond = 0;
         }
+
         row.integrityOk = batches > 0 && row.clockAnomalies == 0 && row.missingBatches == 0 &&
                           row.pendingBatches == 0 &&
                           (row.sampleKind == "batch-total" || row.samples == batches * row.expectedPerBatch);
@@ -590,6 +589,7 @@ BenchmarkProfile parseBenchmarkProfile(std::string_view profile) {
 
     try {
         const auto repetition = std::stoull(std::string{match[2].first, match[2].second});
+
         return {std::string{match[1].first, match[1].second}, static_cast<std::size_t>(repetition)};
     } catch (const std::exception &) {
         return {std::string{profile}, 1};
@@ -604,6 +604,7 @@ RunComparison compareRuns(std::vector<double> values) {
     std::ranges::sort(values);
     const auto middle = values.size() / 2;
     const auto median = values.size() % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2.0;
+
     return {values.size(), values.front(), median, values.back()};
 }
 
@@ -616,7 +617,7 @@ std::expected<MonitoringAnalysis, std::string> analyzeMonitoringDirectory(const 
     std::error_code error;
 
     if (!std::filesystem::is_directory(runDirectory, error)) {
-        return std::unexpected("benchmark directory does not exist: " + runDirectory.string());
+        return std::unexpected(std::format("benchmark directory does not exist: {}", runDirectory.string()));
     }
 
     std::vector<std::filesystem::path> summaries;
@@ -632,7 +633,7 @@ std::expected<MonitoringAnalysis, std::string> analyzeMonitoringDirectory(const 
     std::ranges::sort(summaries);
 
     if (summaries.empty()) {
-        return std::unexpected("no profile summary files found in: " + runDirectory.string());
+        return std::unexpected(std::format("no profile summary files found in: {}", runDirectory.string()));
     }
 
     MonitoringAnalysis analysis;
@@ -798,9 +799,11 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
     });
 
     std::ofstream runs;
+
     if (auto opened = openOutput(runs, runDirectory / "latency-runs.csv"); !opened) {
         return opened;
     }
+
     runs << "\"profile\",\"scenario\",\"repetition\",\"nominal_events_per_second\",\"sample_kind\","
             "\"samples\",\"expected_per_batch\",\"callbacks\",\"clock_anomalies\",\"missing_batches\","
             "\"pending_batches\",\"integrity_ok\",\"min_us\",\"mean_us\",\"p50_us\",\"p90_us\","
@@ -835,10 +838,11 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
         std::string_view name;
         double LatencyRunRow::*member;
     };
+
     constexpr std::array latencyMetrics{
-        LatencyMetric{"mean_us", &LatencyRunRow::meanUs}, LatencyMetric{"p50_us", &LatencyRunRow::p50Us},
-        LatencyMetric{"p90_us", &LatencyRunRow::p90Us},   LatencyMetric{"p95_us", &LatencyRunRow::p95Us},
-        LatencyMetric{"p99_us", &LatencyRunRow::p99Us},   LatencyMetric{"p999_us", &LatencyRunRow::p999Us},
+        LatencyMetric{"mean_us", &LatencyRunRow::meanUs},  LatencyMetric{"p50_us", &LatencyRunRow::p50Us},
+        LatencyMetric{"p90_us", &LatencyRunRow::p90Us},    LatencyMetric{"p95_us", &LatencyRunRow::p95Us},
+        LatencyMetric{"p99_us", &LatencyRunRow::p99Us},    LatencyMetric{"p999_us", &LatencyRunRow::p999Us},
         LatencyMetric{"max_us", &LatencyRunRow::maximumUs}};
     std::map<std::pair<std::string, std::string>, std::vector<const LatencyRunRow *>> latencyGroups;
 
@@ -847,26 +851,33 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
     }
 
     std::vector<ComparisonRow> latencyComparisons;
+
     for (const auto &[key, rows] : latencyGroups) {
         for (const auto &metric : latencyMetrics) {
             std::vector<double> values;
+
             for (const auto *row : rows) {
                 values.push_back(row->*(metric.member));
             }
+
             latencyComparisons.push_back({key.first, key.second, std::string{metric.name}, compareRuns(values)});
         }
     }
 
     std::ofstream latencyComparison;
+
     if (auto opened = openOutput(latencyComparison, runDirectory / "latency-comparison.csv"); !opened) {
         return opened;
     }
+
     writeComparisonHeader(latencyComparison);
+
     for (const auto &row : latencyComparisons) {
         writeComparisonRow(latencyComparison, row);
     }
 
     std::map<std::tuple<std::string, std::string, std::string>, std::vector<double>> monitoringGroups;
+
     for (const auto &aggregate : analysis.aggregates) {
         const auto identity = parseBenchmarkProfile(aggregate.profile);
         const auto isCounter = aggregate.metric == "dropped";
@@ -877,55 +888,68 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
     }
 
     std::vector<ComparisonRow> monitoringComparisons;
+
     for (auto &[key, values] : monitoringGroups) {
         monitoringComparisons.push_back(
             {std::get<0>(key), std::get<1>(key), std::get<2>(key), compareRuns(std::move(values))});
     }
 
     std::ofstream monitoringComparison;
+
     if (auto opened = openOutput(monitoringComparison, runDirectory / "monitoring-comparison.csv"); !opened) {
         return opened;
     }
+
     writeComparisonHeader(monitoringComparison);
+
     for (const auto &row : monitoringComparisons) {
         writeComparisonRow(monitoringComparison, row);
     }
 
     std::ofstream report;
+
     if (auto opened = openOutput(report, runDirectory / "REPORT.md"); !opened) {
         return opened;
     }
-    report << "# Repeated latency benchmark\n\n"
-              "Run-level values are aggregated using the median; the range shows the minimum and maximum across "
-              "independent repetitions. Latencies are in milliseconds.\n\n"
-              "| Scenario | Runs | Event p50 median | Event p99 median (range) | Event p99.9 median | "
-              "Batch p99 median | Integrity |\n"
-              "|---|---:|---:|---:|---:|---:|---|\n";
+
+    report << R"(# Repeated latency benchmark
+
+Run-level values are aggregated using the median; the range shows the minimum and maximum across independent repetitions. Latencies are in milliseconds.
+
+| Scenario | Runs | Event p50 median | Event p99 median (range) | Event p99.9 median | Batch p99 median | Integrity |
+|---|---:|---:|---:|---:|---:|---|
+)";
 
     std::map<std::string, std::vector<const LatencyRunRow *>> scenarios;
+
     for (const auto &row : latencyRows) {
         scenarios[row.identity.scenario].push_back(&row);
     }
+
     for (const auto &[scenario, rows] : scenarios) {
         const auto collect = [&](std::string_view kind, double LatencyRunRow::*member) {
             std::vector<double> values;
+
             for (const auto *row : rows) {
                 if (row->sampleKind == kind) {
                     values.push_back(row->*member / 1000.0);
                 }
             }
+
             return compareRuns(std::move(values));
         };
         const auto p50 = collect("event-total", &LatencyRunRow::p50Us);
         const auto p99 = collect("event-total", &LatencyRunRow::p99Us);
         const auto p999 = collect("event-total", &LatencyRunRow::p999Us);
         const auto batchP99 = collect("batch-total", &LatencyRunRow::p99Us);
-        const auto integrity = std::ranges::all_of(rows, [](const auto *row) { return row->integrityOk; });
+        const auto integrity = std::ranges::all_of(rows, [](const auto *row) {
+            return row->integrityOk;
+        });
         const auto missing = rows.empty() ? 0.0 : rows.front()->missingBatches;
         const auto integrityText = integrity ? "OK" : missing > 0 ? "CHECK; missing batches reported" : "CHECK";
-        report << "| " << scenario << " | " << p50.runs << " | " << std::fixed << std::setprecision(3)
-               << p50.median << " | " << p99.median << " (" << p99.minimum << "–" << p99.maximum << ") | "
-               << p999.median << " | " << batchP99.median << " | " << integrityText << " |\n";
+        report << "| " << scenario << " | " << p50.runs << " | " << std::fixed << std::setprecision(3) << p50.median
+               << " | " << p99.median << " (" << p99.minimum << "–" << p99.maximum << ") | " << p999.median << " | "
+               << batchP99.median << " | " << integrityText << " |\n";
     }
 
     report << "\nGenerated files: `latency-runs.csv`, `latency-comparison.csv`, `monitoring.csv`, "
@@ -940,8 +964,10 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
         const auto found = std::ranges::find_if(monitoringComparisons, [&](const ComparisonRow &row) {
             return row.scenario == scenario && row.category == "client" && row.metric == metric;
         });
+
         return found == monitoringComparisons.end() ? RunComparison{} : found->comparison;
     };
+
     for (const auto &[scenario, rows] : scenarios) {
         const auto readRate = monitoringValue(scenario, "read_data_rps_run_mean");
         const auto readLag = monitoringValue(scenario, "read_data_lag_us_run_mean");
@@ -951,7 +977,10 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
         report << "| " << scenario << " | " << readRate.median << " | " << readLag.median / 1000.0 << " | "
                << cpu.median << "% | " << buffer.maximum << " | " << dropped.maximum << " |\n";
     }
-    if (std::ranges::any_of(latencyRows, [](const LatencyRunRow &row) { return !row.integrityOk; })) {
+
+    if (std::ranges::any_of(latencyRows, [](const LatencyRunRow &row) {
+            return !row.integrityOk;
+        })) {
         return std::unexpected("one or more benchmark runs failed latency integrity checks; see REPORT.md");
     }
 

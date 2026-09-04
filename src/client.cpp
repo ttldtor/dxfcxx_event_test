@@ -9,6 +9,7 @@
 #include <cmath>
 #include <csignal>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -76,18 +77,19 @@ Config parseArgs(int argc, char **argv) {
         const std::string arg = argv[i];
 
         if (arg == "--help") {
-            std::cout << "Usage: latency_client [options]\n"
-                         "  --address HOST:PORT       default 127.0.0.1:7400\n"
-                         "  --task SUB:Q100;S1;T5@100ms    default SUB:Q100@1s\n"
-                         "  --warmup 30s             --duration 5m\n"
-                         "  --window 10s             --batch-timeout 30s\n"
-                         "  --monitoring-stat 10s    0 disables QD statistics\n"
-                         "  --output PREFIX          default latency\n";
+            std::cout << R"(Usage: latency_client [options]
+  --address HOST:PORT       default 127.0.0.1:7400
+  --task SUB:Q100;S1;T5@100ms    default SUB:Q100@1s
+  --warmup 30s             --duration 5m
+  --window 10s             --batch-timeout 30s
+  --monitoring-stat 10s    0 disables QD statistics
+  --output PREFIX          default latency
+)";
             std::exit(0);
         }
 
         if (i + 1 >= argc) {
-            throw std::invalid_argument("missing value for " + arg);
+            throw std::invalid_argument(std::format("missing value for {}", arg));
         }
 
         const std::string value = argv[++i];
@@ -122,7 +124,7 @@ Config parseArgs(int argc, char **argv) {
             } else if (arg == "--batch-timeout") {
                 config.batchTimeout = *duration;
             } else {
-                throw std::invalid_argument("unknown argument: " + arg);
+                throw std::invalid_argument(std::format("unknown argument: {}", arg));
             }
         }
     }
@@ -130,14 +132,12 @@ Config parseArgs(int argc, char **argv) {
     return config;
 }
 
-std::string configureMonitoring(const std::optional<std::chrono::milliseconds> &period) {
+void configureMonitoring(const std::optional<std::chrono::milliseconds> &period) {
     const auto value = latency::monitoringPeriodPropertyValue(period);
 
     if (!System::setProperty(MONITORING_STAT_PROPERTY, value)) {
-        throw std::runtime_error("cannot set " + std::string{MONITORING_STAT_PROPERTY} + "=" + value);
+        throw std::runtime_error(std::format("cannot set {}={}", MONITORING_STAT_PROPERTY, value));
     }
-
-    return value;
 }
 
 // An event is retained until its batch marker supplies the authoritative publication timestamp.
@@ -282,6 +282,7 @@ class Collector {
     bool acceptBatch(std::int32_t sequence) {
         if (!startBoundarySequence_) {
             startBoundarySequence_ = sequence;
+
             return false;
         }
 
@@ -297,6 +298,7 @@ class Collector {
         std::vector<latency::Sample> events, batches;
         std::size_t callbacks{}, negative{}, missing{}, pending{};
     };
+
     struct Totals {
         std::array<std::vector<std::int64_t>, EVENT_KINDS.size()> eventsByKind;
         std::vector<std::int64_t> batches;
@@ -414,11 +416,12 @@ class Collector {
             }
         }
 
-        Window result{std::move(eventWindow_), std::move(batchWindow_), callbacksWindow_, negativeWindow_,
-                      missingWindow_, pending_.size()};
+        Window result{std::move(eventWindow_), std::move(batchWindow_), callbacksWindow_,
+                      negativeWindow_,         missingWindow_,          pending_.size()};
         eventWindow_.clear();
         batchWindow_.clear();
         callbacksWindow_ = negativeWindow_ = missingWindow_ = 0;
+
         return result;
     }
 
@@ -428,8 +431,10 @@ class Collector {
         return Totals{eventGlobalByKind_, batchGlobal_,  callbacksTotal_,
                       negativeTotal_,     missingTotal_, pending_.size()};
     }
+
     std::size_t pendingCount() const {
         std::lock_guard lock{mutex_};
+
         return pending_.size();
     }
 };
@@ -477,9 +482,11 @@ class Reporter {
 
         return result;
     }
+
     static double microseconds(double nanoseconds) {
         return latency::nanosecondsToMicroseconds(nanoseconds);
     }
+
     static void printStats(std::string_view kind, const latency::Statistics &s) {
         std::cout << std::fixed << std::setprecision(2) << "  " << kind << " N=" << s.count;
 
@@ -494,18 +501,19 @@ class Reporter {
 
         std::cout << " us\n";
     }
+
     void writeSummary(std::int64_t start, std::int64_t end, std::string_view kind, const latency::Statistics &s,
                       std::size_t expectedPerBatch, std::size_t callbacks, std::size_t negative, std::size_t missing,
                       std::size_t pending) {
         summary_ << latency::utcTimestamp(start) << ',' << latency::utcTimestamp(end) << ',' << kind << ',' << s.count
                  << ',' << expectedPerBatch << ',' << publishPeriodMs_ << ',' << nominalEventsPerSecond_ << ','
-                 << callbacks << ',' << negative << ',' << missing << ',' << pending << ','
-                 << microseconds(s.minimum) << ',' << microseconds(s.mean) << ',' << microseconds(s.p50) << ','
-                 << microseconds(s.p90) << ',' << microseconds(s.p95) << ',' << microseconds(s.p99) << ','
-                 << microseconds(s.p999) << ',' << microseconds(s.maximum) << ',' << microseconds(s.q1) << ','
-                 << microseconds(s.q3) << ',' << microseconds(s.iqr) << ',' << microseconds(s.outlierThreshold) << ','
-                 << s.outlierCount << '\n';
+                 << callbacks << ',' << negative << ',' << missing << ',' << pending << ',' << microseconds(s.minimum)
+                 << ',' << microseconds(s.mean) << ',' << microseconds(s.p50) << ',' << microseconds(s.p90) << ','
+                 << microseconds(s.p95) << ',' << microseconds(s.p99) << ',' << microseconds(s.p999) << ','
+                 << microseconds(s.maximum) << ',' << microseconds(s.q1) << ',' << microseconds(s.q3) << ','
+                 << microseconds(s.iqr) << ',' << microseconds(s.outlierThreshold) << ',' << s.outlierCount << '\n';
     }
+
     void writeOutliers(const std::vector<latency::Sample> &samples, std::string_view kind,
                        const latency::Statistics &stats, std::optional<latency::EventKind> eventKind = std::nullopt) {
         for (const auto &sample : samples) {
@@ -635,8 +643,8 @@ int main(int argc, char **argv) {
         const auto pattern = latency::parseTask(config.task);
 
         if (!pattern) {
-            throw std::invalid_argument("task parse error at " + std::to_string(pattern.error().position) + ": " +
-                                        pattern.error().message);
+            throw std::invalid_argument(
+                std::format("task parse error at {}: {}", pattern.error().position, pattern.error().message));
         }
 
         const auto expected = pattern->eventCount();
@@ -645,13 +653,9 @@ int main(int argc, char **argv) {
         Collector collector{*pattern, config.batchTimeout, expected * windowBatches, runBatches};
         Reporter reporter{config.output, *pattern};
 
-        System::setProperty("dxscheme.nanoTime", "true");
-        const auto monitoringStat = configureMonitoring(config.monitoringStat);
-        const auto endpoint = DXEndpoint::newBuilder()
-                                  ->withRole(DXEndpoint::Role::STREAM_FEED)
-                                  ->withName("latency-client")
-                                  ->withProperty(MONITORING_STAT_PROPERTY, monitoringStat)
-                                  ->build();
+        configureMonitoring(config.monitoringStat);
+        const auto endpoint =
+            DXEndpoint::newBuilder()->withRole(DXEndpoint::Role::STREAM_FEED)->withName("latency-client")->build();
         const auto feed = endpoint->getFeed();
         std::vector<std::shared_ptr<DXFeedSubscription>> subscriptions;
         const auto subscribe = [&](const EventTypeEnum &type, latency::EventKind kind) {
@@ -679,12 +683,12 @@ int main(int argc, char **argv) {
         endpoint->connect(config.address);
         std::cout << "Connected to " << config.address << ", task " << config.task << ", expected " << expected
                   << " events/batch every " << pattern->publishPeriod.count() << " ms (nominal "
-                  << pattern->nominalEventsPerSecond() << " events/s). Warm-up " << config.warmup.count()
-                  << " ms.\n";
+                  << pattern->nominalEventsPerSecond() << " events/s). Warm-up " << config.warmup.count() << " ms.\n";
 
         if (!waitFor(config.warmup)) {
             control->removeSymbols(config.task);
             endpoint->closeAndAwaitTermination();
+
             return 130;
         }
 
@@ -732,9 +736,11 @@ int main(int argc, char **argv) {
 
         reporter.final(collector.totals(), finalWall);
         endpoint->closeAndAwaitTermination();
+
         return interrupted.load() ? 130 : 0;
     } catch (const std::exception &e) {
         std::cerr << "Client error: " << e.what() << '\n';
+
         return 1;
     }
 }

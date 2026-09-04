@@ -18,6 +18,7 @@ RUN curl.exe -SL --output C:\vs_buildtools.exe https://aka.ms/vs/17/release/vs_b
 
 WORKDIR C:\src
 COPY CMakeLists.txt C:\src\
+COPY dxfeed.system.properties C:\src\
 COPY include C:\src\include
 COPY src C:\src\src
 
@@ -42,6 +43,7 @@ RUN C:\vc_redist.x64.exe /install /quiet /norestart `
 
 COPY --from=build C:\install\bin C:\latency\bin
 ENV PATH="C:\latency\bin;${PATH}"
+ENV DXFEED_dxfeed.system.properties="C:\latency\bin\dxfeed.system.properties"
 WORKDIR C:\work
 
 EXPOSE 7400

@@ -11,6 +11,7 @@ RUN apt-get update \
 
 WORKDIR /src
 COPY CMakeLists.txt ./
+COPY dxfeed.system.properties ./
 COPY include ./include
 COPY src ./src
 
@@ -46,6 +47,7 @@ RUN printf '%s\n' '/opt/gcc-runtime' > /etc/ld.so.conf.d/gcc-runtime.conf \
 
 ENV LD_LIBRARY_PATH="/opt/gcc-runtime"
 ENV PATH="/opt/latency/bin:${PATH}"
+ENV DXFEED_dxfeed.system.properties="/opt/latency/bin/dxfeed.system.properties"
 WORKDIR /work
 
 RUN latency_server --help > /dev/null \

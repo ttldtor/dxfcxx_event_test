@@ -30,6 +30,29 @@ ctest --test-dir build -C Release --output-on-failure
 The executables are under `build/` with a single-configuration generator and under `build/Release/` with Visual
 Studio. Run any executable with `--help` to see all options.
 
+### Runtime properties and code style
+
+The default [`dxfeed.system.properties`](dxfeed.system.properties) file is loaded by the dxFeed Graal C++ API when
+the isolate is initialized. It enables `dxscheme.nanoTime=true` for all dxFeed entities in the process. Docker
+images set `DXFEED_dxfeed.system.properties` to the installed copy explicitly; for a native run, keep the file in
+the process working directory or set the same environment variable to a different properties file. Options that
+are expected to vary per run, such as `monitoring.stat`, are still applied programmatically before the first
+endpoint is created and therefore also have process-wide scope.
+
+First-party code targets C++23. clang-format 20.1.8 is the primary formatter; Uncrustify 0.83.0 adds the
+statement-level blank-line rules from [`CONTRIBUTING.md`](CONTRIBUTING.md) that clang-format cannot express. After
+configuring the project, equivalent cross-platform formatting commands are available as CMake targets:
+
+```sh
+cmake --build build --target format
+cmake --build build --target check-format
+```
+
+In CLion, enable clang-format for the project and run the `format` target when statement-level spacing also needs to
+be applied. Both tools must match the versions above so local output remains identical to CI.
+
+Tests use the header-only doctest framework, fetched at its pinned release by CMake.
+
 ## Executables
 
 `latency_server` is a QD publisher. It listens on `--address` (default `:7400`) and waits for a client to subscribe to
@@ -82,9 +105,9 @@ Append `.exe` and use `build/Release/` for a Visual Studio build. By default, th
 followed by a five-minute measurement divided into 10-second windows. It writes `<prefix>-summary.csv` and
 `<prefix>-outliers.csv`; use `--output <prefix>` to choose their location and basename.
 
-Both processes set `monitoring.stat=10s`, making QD print internal endpoint statistics every 10 seconds. Pass
-`--monitoring-stat 0` to disable the reports or provide another positive duration. Redirect stdout and stderr when
-the logs will be analyzed later:
+Both processes default `monitoring.stat` to `10s`, making QD print internal endpoint statistics every 10 seconds.
+Pass `--monitoring-stat 0` to disable the reports or provide another positive duration. Redirect stdout and stderr
+when the logs will be analyzed later:
 
 ```sh
 ./build/latency_server --address :7400 > run/q1k-server.log 2>&1

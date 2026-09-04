@@ -1,155 +1,206 @@
 #include "latency/core.hpp"
 #include "latency/monitoring.hpp"
 
-#include <cmath>
+#include <doctest/doctest.h>
+
+#include <dxfeed_graal_cpp_api/system/System.hpp>
+
+#include <chrono>
 #include <filesystem>
+#include <format>
 #include <fstream>
-#include <iostream>
-#include <limits>
 #include <ranges>
 #include <string>
-#include <vector>
+#include <utility>
 
 namespace {
-int failures = 0;
-void check(bool condition, std::string_view message) {
-    if (!condition) {
-        std::cerr << "FAIL: " << message << '\n';
-        ++failures;
+
+using namespace std::chrono_literals;
+using namespace latency;
+
+class TemporaryDirectory {
+    std::filesystem::path path_;
+
+    public:
+    explicit TemporaryDirectory(std::filesystem::path path) : path_(std::move(path)) {
+        std::error_code error;
+        std::filesystem::remove_all(path_, error);
+        std::filesystem::create_directories(path_);
     }
-}
+
+    ~TemporaryDirectory() {
+        std::error_code error;
+        std::filesystem::remove_all(path_, error);
+    }
+
+    [[nodiscard]] const std::filesystem::path &path() const noexcept {
+        return path_;
+    }
+};
+
+const std::filesystem::path FIXTURE_DIRECTORY{LATENCY_TEST_DATA_DIR};
+
 } // namespace
 
-int main(int argc, char **argv) {
-    using namespace latency;
+TEST_CASE("task and duration parsing") {
     const auto parsed = parseTask("SUB:Q100;S1;T5");
-    check(parsed.has_value(), "valid mixed task parses");
 
-    if (parsed) {
-        check(parsed->toString() == "SUB:Q100;S1;T5", "task round trip");
-        check(parsed->eventCount() == 106, "total quantity");
-        check(parsed->publishPeriod == std::chrono::seconds{1}, "default publish period");
-        const auto q = parsed->symbols(EventKind::QUOTE);
-        check(q.size() == 100 && q.front() == "Q00" && q.back() == "Q99", "Q100 symbols");
-    }
+    REQUIRE(parsed.has_value());
+    CHECK(parsed->toString() == "SUB:Q100;S1;T5");
+    CHECK(parsed->eventCount() == 106);
+    CHECK(parsed->publishPeriod == 1s);
+
+    const auto quotes = parsed->symbols(EventKind::QUOTE);
+
+    REQUIRE(quotes.size() == 100);
+    CHECK(quotes.front() == "Q00");
+    CHECK(quotes.back() == "Q99");
 
     const auto cadence = parseTask("SUB:Q500;T500;S500@10ms");
-    check(cadence && cadence->toString() == "SUB:Q500;T500;S500@10ms", "cadence task round trip");
-    check(cadence && cadence->publishPeriod == std::chrono::milliseconds{10}, "millisecond publish period");
-    check(cadence && cadence->nominalEventsPerSecond() == 150'000, "nominal event rate");
-    check(cadence && cadence->batchCount(std::chrono::milliseconds{25}) == 3, "partial period rounded up");
+
+    REQUIRE(cadence.has_value());
+    CHECK(cadence->toString() == "SUB:Q500;T500;S500@10ms");
+    CHECK(cadence->publishPeriod == 10ms);
+    CHECK(cadence->nominalEventsPerSecond() == 150'000);
+    CHECK(cadence->batchCount(25ms) == 3);
+
     const auto secondsCadence = parseTask("SUB:Q1@2s");
-    check(secondsCadence && secondsCadence->toString() == "SUB:Q1@2s", "second period canonicalized");
 
-    check(!parseTask("SUB:"), "empty task rejected");
-    check(!parseTask("SUB:Q0"), "zero rejected");
-    check(!parseTask("SUB:Q1;Q2"), "duplicate rejected");
-    check(!parseTask("SUB:X1"), "unknown type rejected");
-    check(!parseTask("SUB:Q1junk"), "trailing input rejected");
-    check(!parseTask("SUB:Q1;"), "trailing separator rejected");
-    check(!parseTask("SUB:Q1@"), "missing publish period rejected");
-    check(!parseTask("SUB:Q1@0ms"), "zero publish period rejected");
-    check(!parseTask("SUB:Q1@10ms@20ms"), "duplicate publish period rejected");
-    check(!parseTask("SUB:Q999999999999999999999999999999"), "overflow rejected");
-    check(parseDuration("10s") == std::chrono::seconds{10}, "seconds duration");
-    check(parseDuration("2m") == std::chrono::minutes{2}, "minutes duration");
-    check(!parseDuration("0s"), "zero duration rejected");
+    REQUIRE(secondsCadence.has_value());
+    CHECK(secondsCadence->toString() == "SUB:Q1@2s");
+
+    CHECK_FALSE(parseTask("SUB:").has_value());
+    CHECK_FALSE(parseTask("SUB:Q0").has_value());
+    CHECK_FALSE(parseTask("SUB:Q1;Q2").has_value());
+    CHECK_FALSE(parseTask("SUB:X1").has_value());
+    CHECK_FALSE(parseTask("SUB:Q1junk").has_value());
+    CHECK_FALSE(parseTask("SUB:Q1;").has_value());
+    CHECK_FALSE(parseTask("SUB:Q1@").has_value());
+    CHECK_FALSE(parseTask("SUB:Q1@0ms").has_value());
+    CHECK_FALSE(parseTask("SUB:Q1@10ms@20ms").has_value());
+    CHECK_FALSE(parseTask("SUB:Q999999999999999999999999999999").has_value());
+
+    CHECK(parseDuration("10s") == 10s);
+    CHECK(parseDuration("2m") == 2min);
+    CHECK_FALSE(parseDuration("0s").has_value());
+
     const auto monitoringPeriod = parseMonitoringPeriod("10s");
-    check(monitoringPeriod && *monitoringPeriod == std::chrono::seconds{10}, "monitoring period");
+
+    REQUIRE(monitoringPeriod.has_value());
+    CHECK(*monitoringPeriod == 10s);
+
     const auto disabledMonitoring = parseMonitoringPeriod("0");
-    check(disabledMonitoring && !*disabledMonitoring, "monitoring disabled");
-    check(!parseMonitoringPeriod("off"), "invalid monitoring period rejected");
-    check(monitoringPeriodPropertyValue(std::chrono::seconds{10}) == "10s", "whole monitoring seconds");
-    check(monitoringPeriodPropertyValue(std::chrono::milliseconds{1500}) == "1.5s", "fractional monitoring seconds");
-    check(monitoringPeriodPropertyValue(std::nullopt) == "0", "disabled monitoring property");
 
+    REQUIRE(disabledMonitoring.has_value());
+    CHECK_FALSE(disabledMonitoring->has_value());
+    CHECK_FALSE(parseMonitoringPeriod("off").has_value());
+    CHECK(monitoringPeriodPropertyValue(10s) == "10s");
+    CHECK(monitoringPeriodPropertyValue(1500ms) == "1.5s");
+    CHECK(monitoringPeriodPropertyValue(std::nullopt) == "0");
+}
+
+TEST_CASE("statistics and benchmark profile comparison") {
     const auto stats = calculateStatistics({1, 1, 2, 2, 100});
-    check(stats.count == 5 && stats.p50 == 2 && stats.q1 == 1 && stats.q3 == 2, "percentiles");
-    check(stats.outlierThreshold == 3.5 && stats.outlierCount == 1, "IQR outlier");
+
+    CHECK(stats.count == 5);
+    CHECK(stats.p50 == 2);
+    CHECK(stats.q1 == 1);
+    CHECK(stats.q3 == 2);
+    CHECK(stats.outlierThreshold == doctest::Approx{3.5});
+    CHECK(stats.outlierCount == 1);
+
     const auto flat = calculateStatistics({5, 5, 5, 5, 6});
-    check(flat.iqr == 0 && flat.outlierCount == 1, "zero IQR behavior");
-    check(calculateStatistics({}).count == 0, "empty statistics");
-    check(nanosecondsToMicroseconds(123'456) == 123.456, "nanoseconds to microseconds");
-    check(parseBenchmarkProfile("q50k-t50k-s50k-r03") == BenchmarkProfile{"q50k-t50k-s50k", 3},
-          "benchmark repetition suffix parsed");
-    check(parseBenchmarkProfile("legacy-profile") == BenchmarkProfile{"legacy-profile", 1},
-          "legacy benchmark profile supported");
-    const auto runComparison = compareRuns({9, 1, 5, 3});
-    check(runComparison.runs == 4 && runComparison.minimum == 1 && runComparison.median == 4 &&
-              runComparison.maximum == 9,
-          "run comparison calculated");
 
-    if (argc == 2) {
-        const auto fixture = std::filesystem::path{argv[1]};
-        const auto analysis = analyzeMonitoringDirectory(fixture, std::chrono::seconds{10});
-        check(analysis.has_value(), "monitoring fixture parses");
+    CHECK(flat.iqr == 0);
+    CHECK(flat.outlierCount == 1);
+    CHECK(calculateStatistics({}).count == 0);
+    CHECK(nanosecondsToMicroseconds(123'456) == doctest::Approx{123.456});
 
-        if (analysis) {
-            check(analysis->samples.size() == 4, "all monitoring intervals parsed");
-            check(analysis->samples.front().subscription == 3'001, "numbers with separators parsed");
-            check(analysis->samples.front().readDataRps == 3'002, "read details parsed");
-            check(analysis->samples.front().readDataLagUs == -800, "negative numbers parsed");
-            check(analysis->samples.front().cpuPercent == 0.1, "fractional numbers parsed");
-            check(!analysis->samples.front().sticky, "missing optional metric preserved");
-            check(!analysis->aggregates.empty(), "measurement aggregates produced");
-            const auto cpu = std::ranges::find_if(analysis->aggregates, [](const MonitoringAggregate &aggregate) {
-                return aggregate.profile == "example" && aggregate.process == "client" &&
-                       aggregate.metric == "cpu_percent";
-            });
-            check(cpu != analysis->aggregates.end() && cpu->samples == 2 && std::abs(cpu->mean - 0.15) < 0.0001,
-                  "monitoring aggregate calculated");
+    const auto repeatedProfile = parseBenchmarkProfile("q50k-t50k-s50k-r03");
+    const auto legacyProfile = parseBenchmarkProfile("legacy-profile");
 
-            const auto repeatedFixture = std::filesystem::temp_directory_path() / "latency-repeated-fixture";
-            std::error_code repeatedError;
-            std::filesystem::remove_all(repeatedFixture, repeatedError);
-            std::filesystem::create_directories(repeatedFixture);
-            for (const auto repetition : {"r01", "r02", "r03"}) {
-                const auto profile = std::string{"example-"} + repetition;
-                std::filesystem::copy_file(fixture / "example-summary.csv",
-                                           repeatedFixture / (profile + "-summary.csv"));
-                std::filesystem::copy_file(fixture / "example-server.log",
-                                           repeatedFixture / (profile + "-server.log"));
-                std::filesystem::copy_file(fixture / "example-client.log",
-                                           repeatedFixture / (profile + "-client.log"));
-            }
-            const auto repeated = analyzeMonitoringDirectory(repeatedFixture, std::chrono::seconds{10});
-            check(repeated.has_value(), "repeated monitoring fixture parses");
-            if (repeated) {
-                check(writeBenchmarkComparison(repeatedFixture, *repeated).has_value(),
-                      "benchmark comparison files written");
-                check(std::filesystem::file_size(repeatedFixture / "latency-runs.csv") > 0,
-                      "latency run details produced");
-                check(std::filesystem::file_size(repeatedFixture / "monitoring-comparison.csv") > 0,
-                      "monitoring comparison produced");
-                std::ifstream report{repeatedFixture / "REPORT.md"};
-                const std::string reportText{std::istreambuf_iterator<char>{report}, {}};
-                check(reportText.contains("| example | 3 |"), "report groups benchmark repetitions");
-            }
-            std::filesystem::remove_all(repeatedFixture, repeatedError);
-        }
+    CHECK(repeatedProfile == (BenchmarkProfile{"q50k-t50k-s50k", 3}));
+    CHECK(legacyProfile == (BenchmarkProfile{"legacy-profile", 1}));
 
-        check(!analyzeMonitoringDirectory(fixture / "missing", std::chrono::seconds{10}),
-              "missing monitoring directory rejected");
-        check(!analyzeMonitoringDirectory(fixture, std::chrono::milliseconds::zero()),
-              "zero monitoring period rejected");
+    const auto comparison = compareRuns({9, 1, 5, 3});
 
-        const auto invalidFixture = std::filesystem::temp_directory_path() / "latency-monitoring-invalid-fixture";
-        std::error_code filesystemError;
-        std::filesystem::remove_all(invalidFixture, filesystemError);
-        std::filesystem::create_directories(invalidFixture);
-        std::filesystem::copy_file(fixture / "example-summary.csv", invalidFixture / "example-summary.csv");
-        std::filesystem::copy_file(fixture / "example-server.log", invalidFixture / "example-server.log");
-        check(!analyzeMonitoringDirectory(invalidFixture, std::chrono::seconds{10}), "missing process log rejected");
-        std::filesystem::copy_file(fixture / "example-client.log", invalidFixture / "example-client.log");
-        std::ofstream{invalidFixture / "example-summary.csv", std::ios::trunc}
-            << "window_start_utc,window_end_utc,sample_kind,expected_per_batch\n"
-               "2026-01-02T00:00:00Z,2026-01-02T00:01:00Z,event,3000junk\n";
-        check(!analyzeMonitoringDirectory(invalidFixture, std::chrono::seconds{10}),
-              "number with trailing characters rejected");
-        std::filesystem::remove_all(invalidFixture, filesystemError);
-    } else {
-        check(false, "monitoring fixture path argument provided");
+    CHECK(comparison.runs == 4);
+    CHECK(comparison.minimum == 1);
+    CHECK(comparison.median == 4);
+    CHECK(comparison.maximum == 9);
+}
+
+TEST_CASE("monitoring fixture analysis") {
+    const auto analysis = analyzeMonitoringDirectory(FIXTURE_DIRECTORY, 10s);
+
+    REQUIRE(analysis.has_value());
+    REQUIRE(analysis->samples.size() == 4);
+    CHECK(analysis->samples.front().subscription == 3'001);
+    CHECK(analysis->samples.front().readDataRps == 3'002);
+    CHECK(analysis->samples.front().readDataLagUs == -800);
+    CHECK(analysis->samples.front().cpuPercent == doctest::Approx{0.1});
+    CHECK_FALSE(analysis->samples.front().sticky.has_value());
+    CHECK_FALSE(analysis->aggregates.empty());
+
+    const auto cpu = std::ranges::find_if(analysis->aggregates, [](const MonitoringAggregate &aggregate) {
+        return aggregate.profile == "example" && aggregate.process == "client" && aggregate.metric == "cpu_percent";
+    });
+
+    REQUIRE(cpu != analysis->aggregates.end());
+    CHECK(cpu->samples == 2);
+    CHECK(cpu->mean == doctest::Approx{0.15});
+}
+
+TEST_CASE("repeated benchmark comparison files") {
+    TemporaryDirectory repeatedFixture{std::filesystem::temp_directory_path() / "latency-repeated-fixture"};
+
+    for (const auto repetition : {"r01", "r02", "r03"}) {
+        const auto profile = std::format("example-{}", repetition);
+        std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-summary.csv",
+                                   repeatedFixture.path() / std::format("{}-summary.csv", profile));
+        std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-server.log",
+                                   repeatedFixture.path() / std::format("{}-server.log", profile));
+        std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-client.log",
+                                   repeatedFixture.path() / std::format("{}-client.log", profile));
     }
 
-    return failures ? 1 : 0;
+    const auto analysis = analyzeMonitoringDirectory(repeatedFixture.path(), 10s);
+
+    REQUIRE(analysis.has_value());
+    REQUIRE(writeBenchmarkComparison(repeatedFixture.path(), *analysis).has_value());
+    CHECK(std::filesystem::file_size(repeatedFixture.path() / "latency-runs.csv") > 0);
+    CHECK(std::filesystem::file_size(repeatedFixture.path() / "monitoring-comparison.csv") > 0);
+
+    std::ifstream report{repeatedFixture.path() / "REPORT.md"};
+    const std::string reportText{std::istreambuf_iterator<char>{report}, {}};
+
+    CHECK(reportText.contains("| example | 3 |"));
+}
+
+TEST_CASE("invalid monitoring inputs are rejected") {
+    CHECK_FALSE(analyzeMonitoringDirectory(FIXTURE_DIRECTORY / "missing", 10s).has_value());
+    CHECK_FALSE(analyzeMonitoringDirectory(FIXTURE_DIRECTORY, 0ms).has_value());
+
+    TemporaryDirectory invalidFixture{std::filesystem::temp_directory_path() / "latency-monitoring-invalid-fixture"};
+    std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-summary.csv",
+                               invalidFixture.path() / "example-summary.csv");
+    std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-server.log", invalidFixture.path() / "example-server.log");
+
+    CHECK_FALSE(analyzeMonitoringDirectory(invalidFixture.path(), 10s).has_value());
+
+    std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-client.log", invalidFixture.path() / "example-client.log");
+
+    {
+        std::ofstream summary{invalidFixture.path() / "example-summary.csv", std::ios::trunc};
+        summary << R"(window_start_utc,window_end_utc,sample_kind,expected_per_batch
+2026-01-02T00:00:00Z,2026-01-02T00:01:00Z,event,3000junk
+)";
+    }
+
+    CHECK_FALSE(analyzeMonitoringDirectory(invalidFixture.path(), 10s).has_value());
+}
+
+TEST_CASE("the default isolate properties file enables nanosecond timestamps") {
+    INFO("working directory: " << std::filesystem::current_path().string());
+    CHECK(dxfcpp::System::getProperty("dxscheme.nanoTime") == "true");
 }

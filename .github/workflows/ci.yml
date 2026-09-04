@@ -6,6 +6,30 @@ on:
   workflow_dispatch:
 
 jobs:
+  format:
+    name: Formatting
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install clang-format 20.1.8
+        run: python -m pip install --disable-pip-version-check clang-format==20.1.8
+      - name: Build Uncrustify 0.83.0
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error \
+            https://github.com/uncrustify/uncrustify/archive/refs/tags/uncrustify-0.83.0.tar.gz \
+            --output "$RUNNER_TEMP/uncrustify.tar.gz"
+          echo "1d4d3ab3a991c66eb24cb0a3e690573b4882fd98bc6ec64a01c283998c20dc87  $RUNNER_TEMP/uncrustify.tar.gz" \
+            | sha256sum --check
+          tar --extract --gzip --file "$RUNNER_TEMP/uncrustify.tar.gz" --directory "$RUNNER_TEMP"
+          cmake -S "$RUNNER_TEMP/uncrustify-uncrustify-0.83.0" \
+            -B "$RUNNER_TEMP/uncrustify-build" -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/uncrustify-build" --parallel 4
+          echo "$RUNNER_TEMP/uncrustify-build" >> "$GITHUB_PATH"
+      - name: Check C++ formatting
+        run: cmake -DPROJECT_ROOT="$PWD" -DMODE=CHECK -P tools/format.cmake
+
   native:
     name: Native / ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}

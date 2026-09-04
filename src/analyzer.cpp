@@ -4,11 +4,13 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <format>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 
 namespace {
+
 using namespace std::chrono_literals;
 
 struct Config {
@@ -23,14 +25,15 @@ Config parseArgs(int argc, char **argv) {
         const std::string arg = argv[i];
 
         if (arg == "--help") {
-            std::cout << "Usage: latency_analyzer [options]\n"
-                         "  --run-directory PATH     benchmark directory (required)\n"
-                         "  --monitoring-period 10s  QD monitoring interval\n";
+            std::cout << R"(Usage: latency_analyzer [options]
+  --run-directory PATH     benchmark directory (required)
+  --monitoring-period 10s  QD monitoring interval
+)";
             std::exit(0);
         }
 
         if (i + 1 >= argc) {
-            throw std::invalid_argument("missing value for " + arg);
+            throw std::invalid_argument(std::format("missing value for {}", arg));
         }
 
         const std::string value = argv[++i];
@@ -46,7 +49,7 @@ Config parseArgs(int argc, char **argv) {
 
             config.monitoringPeriod = *duration;
         } else {
-            throw std::invalid_argument("unknown argument: " + arg);
+            throw std::invalid_argument(std::format("unknown argument: {}", arg));
         }
     }
 
@@ -56,6 +59,7 @@ Config parseArgs(int argc, char **argv) {
 
     return config;
 }
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -86,6 +90,7 @@ int main(int argc, char **argv) {
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "Error: " << error.what() << '\n';
+
         return 1;
     }
 }
