@@ -284,6 +284,7 @@ std::expected<Measurement, std::string> readMeasurement(const std::filesystem::p
     const auto endIndex = indexOf("window_end_utc");
     const auto kindIndex = indexOf("sample_kind");
     const auto expectedIndex = indexOf("expected_per_batch");
+    const auto nominalIndex = indexOf("nominal_events_per_second");
 
     if (!startIndex || !endIndex || !kindIndex || !expectedIndex) {
         return std::unexpected("latency summary has no required columns: " + path.string());
@@ -293,7 +294,10 @@ std::expected<Measurement, std::string> readMeasurement(const std::filesystem::p
 
     while (std::getline(input, line)) {
         const auto columns = parseCsvRow(line);
-        const auto maximumIndex = std::max({*startIndex, *endIndex, *kindIndex, *expectedIndex});
+        auto maximumIndex = std::max({*startIndex, *endIndex, *kindIndex, *expectedIndex});
+        if (nominalIndex) {
+            maximumIndex = std::max(maximumIndex, *nominalIndex);
+        }
 
         if (columns.size() <= maximumIndex || columns[*kindIndex] != "event") {
             continue;
@@ -302,13 +306,14 @@ std::expected<Measurement, std::string> readMeasurement(const std::filesystem::p
         auto start = parseUtcTimestamp(columns[*startIndex]);
         auto end = parseUtcTimestamp(columns[*endIndex]);
         auto expected = parseNumber(columns[*expectedIndex]);
+        auto nominal = nominalIndex ? parseNumber(columns[*nominalIndex]) : expected;
 
-        if (!start || !end || !expected) {
+        if (!start || !end || !expected || !nominal) {
             return std::unexpected("invalid event row in latency summary: " + path.string());
         }
 
         if (!measurement) {
-            measurement = Measurement{*start, *end, *expected};
+            measurement = Measurement{*start, *end, *nominal};
         } else {
             measurement->end = *end;
         }
@@ -455,6 +460,7 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
     const auto kindIndex = indexOf("sample_kind");
     const auto samplesIndex = indexOf("samples");
     const auto expectedIndex = indexOf("expected_per_batch");
+    const auto nominalIndex = indexOf("nominal_events_per_second");
     const auto callbacksIndex = indexOf("callbacks");
     const auto clockIndex = indexOf("clock_anomalies");
     const auto missingIndex = indexOf("missing_batches");
@@ -513,10 +519,19 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
             pending = *value;
         }
 
+        double nominal = *values[1];
+        if (nominalIndex) {
+            auto value = number(nominalIndex);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            nominal = *value;
+        }
+
         rows.push_back(LatencyRunRow{profile,
                                      identity,
                                      columns[*kindIndex],
-                                     0,
+                                     nominal,
                                      *values[0],
                                      *values[1],
                                      *values[2],
@@ -538,8 +553,11 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
     const auto batches = batch == rows.end() ? 0.0 : batch->samples;
 
     for (auto &row : rows) {
-        row.nominalEventsPerSecond = row.sampleKind == "batch-total" ? 0 : row.expectedPerBatch;
-        row.integrityOk = batches > 0 && row.clockAnomalies == 0 && row.pendingBatches == 0 &&
+        if (row.sampleKind == "batch-total") {
+            row.nominalEventsPerSecond = 0;
+        }
+        row.integrityOk = batches > 0 && row.clockAnomalies == 0 && row.missingBatches == 0 &&
+                          row.pendingBatches == 0 &&
                           (row.sampleKind == "batch-total" || row.samples == batches * row.expectedPerBatch);
     }
 
@@ -767,7 +785,7 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
         }
 
         const auto event = std::ranges::find(*rows, "event-total", &LatencyRunRow::sampleKind);
-        const auto nominal = event == rows->end() ? 0 : event->expectedPerBatch;
+        const auto nominal = event == rows->end() ? 0 : event->nominalEventsPerSecond;
 
         for (auto &row : *rows) {
             row.nominalEventsPerSecond = nominal;
@@ -904,7 +922,7 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
         const auto batchP99 = collect("batch-total", &LatencyRunRow::p99Us);
         const auto integrity = std::ranges::all_of(rows, [](const auto *row) { return row->integrityOk; });
         const auto missing = rows.empty() ? 0.0 : rows.front()->missingBatches;
-        const auto integrityText = !integrity ? "CHECK" : missing > 0 ? "OK; missing batches reported" : "OK";
+        const auto integrityText = integrity ? "OK" : missing > 0 ? "CHECK; missing batches reported" : "CHECK";
         report << "| " << scenario << " | " << p50.runs << " | " << std::fixed << std::setprecision(3)
                << p50.median << " | " << p99.median << " (" << p99.minimum << "–" << p99.maximum << ") | "
                << p999.median << " | " << batchP99.median << " | " << integrityText << " |\n";

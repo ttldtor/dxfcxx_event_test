@@ -2,11 +2,13 @@
 
 #include <dxfeed_graal_cpp_api/api.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
 #include <deque>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -47,6 +49,10 @@ class Generator {
         latency::TaskPattern pattern;
         std::vector<std::shared_ptr<EventType>> events;
         std::uint32_t tick{};
+        std::uint64_t publications{}, skippedDeadlines{};
+        std::chrono::nanoseconds preparationTotal{}, preparationMaximum{};
+        std::chrono::nanoseconds publishTotal{}, publishMaximum{};
+        std::chrono::steady_clock::time_point started{std::chrono::steady_clock::now()};
     };
 
     // Allocate and initialize the stable event objects that are updated and republished on every tick.
@@ -83,26 +89,18 @@ class Generator {
     }
 
     void publish(ActiveTask &active) {
-        const auto nowNs = latency::unixNanosNow();
-        const auto nowMs = nowNs / 1'000'000;
-        const auto nanoPart = static_cast<std::int32_t>(nowNs % 1'000'000);
-
+        const auto preparationStart = std::chrono::steady_clock::now();
         ++active.tick;
         const auto sequence = static_cast<std::int32_t>(active.tick % TextMessage::MAX_SEQUENCE);
 
-        // All event-specific correlation fields and the authoritative marker timestamp describe this same batch.
+        // Event fields identify the batch. The marker timestamp is captured after preparation, at the publish boundary.
         for (const auto &event : active.events) {
             if (auto quote = event->sharedAs<Quote>()) {
-                quote->setBidTime(nowMs);
-                quote->setAskTime(nowMs);
-                quote->setTimeNanoPart(nanoPart);
-                quote->setBidSize(1);
+                quote->setBidSize(sequence);
                 quote->setAskSize(1);
                 quote->setBidPrice(100.0 + active.tick % 100);
                 quote->setAskPrice(100.01 + active.tick % 100);
-                quote->setSequence(sequence);
             } else if (auto trade = event->sharedAs<Trade>()) {
-                trade->setTimeNanos(nowNs);
                 trade->setPrice(100.0 + active.tick % 100);
                 trade->setSize(1);
                 trade->setSequence(sequence);
@@ -112,17 +110,46 @@ class Generator {
                 summary->setDayHighPrice(101 + active.tick % 100);
                 summary->setDayLowPrice(98);
                 summary->setDayClosePrice(100 + active.tick % 100);
-            } else if (auto marker = event->sharedAs<TextMessage>()) {
-                marker->setTime(nowMs);
-                marker->setSequence(sequence);
-                marker->setText("LATENCY_BATCH:" + std::to_string(nowNs));
             }
         }
 
+        const auto nowNs = latency::unixNanosNow();
+        const auto marker = active.events.back()->sharedAs<TextMessage>();
+        marker->setTime(nowNs / 1'000'000);
+        marker->setSequence(sequence);
+        marker->setText("LATENCY_BATCH:" + std::to_string(nowNs));
+        const auto publishStart = std::chrono::steady_clock::now();
+        const auto preparation = std::chrono::duration_cast<std::chrono::nanoseconds>(publishStart - preparationStart);
         publisher_->publishEvents(active.events);
+        const auto publishDuration =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - publishStart);
+        ++active.publications;
+        active.preparationTotal += preparation;
+        active.preparationMaximum = std::max(active.preparationMaximum, preparation);
+        active.publishTotal += publishDuration;
+        active.publishMaximum = std::max(active.publishMaximum, publishDuration);
+    }
+
+    static void logSummary(const ActiveTask &active) {
+        const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - active.started).count();
+        const auto publications = std::max<std::uint64_t>(1, active.publications);
+        const auto milliseconds = [](std::chrono::nanoseconds value) {
+            return std::chrono::duration<double, std::milli>(value).count();
+        };
+
+        std::cout << std::fixed << std::setprecision(3) << "Generator summary " << active.command
+                  << ": publications=" << active.publications << " skipped-deadlines=" << active.skippedDeadlines
+                  << " actual-batches/s=" << (elapsed > 0 ? active.publications / elapsed : 0)
+                  << " actual-events/s="
+                  << (elapsed > 0 ? active.publications * active.pattern.eventCount() / elapsed : 0)
+                  << " preparation-ms(avg/max)=" << milliseconds(active.preparationTotal) / publications << '/'
+                  << milliseconds(active.preparationMaximum) << " publish-ms(avg/max)="
+                  << milliseconds(active.publishTotal) / publications << '/' << milliseconds(active.publishMaximum)
+                  << '\n' << std::flush;
     }
 
     void run() {
+        constexpr auto SPIN_WINDOW = 20ms;
         std::optional<ActiveTask> active;
         auto nextTick = std::chrono::steady_clock::now();
 
@@ -135,12 +162,29 @@ class Generator {
                     return stopping_ || !commands_.empty();
                 });
             } else {
-                cv_.wait_until(lock, nextTick, [&] {
-                    return stopping_ || !commands_.empty();
-                });
+                const auto now = std::chrono::steady_clock::now();
+
+                if (nextTick - now > SPIN_WINDOW) {
+                    cv_.wait_until(lock, nextTick - SPIN_WINDOW, [&] {
+                        return stopping_ || !commands_.empty();
+                    });
+                }
+
+                if (!stopping_ && commands_.empty() && std::chrono::steady_clock::now() < nextTick) {
+                    // Windows timed condition-variable waits can be quantized to about 15.6 ms. Yielding near the
+                    // deadline keeps 10 ms and 1 ms benchmark cadences portable without changing global timer state.
+                    lock.unlock();
+                    while (std::chrono::steady_clock::now() < nextTick) {
+                        std::this_thread::yield();
+                    }
+                    lock.lock();
+                }
             }
 
             if (stopping_) {
+                if (active) {
+                    logSummary(*active);
+                }
                 return;
             }
 
@@ -161,7 +205,9 @@ class Generator {
                             active.emplace(ActiveTask{command.text, *parsed, makeEvents(*parsed, command.text)});
                             nextTick = std::chrono::steady_clock::now();
                             std::cout << "Started " << command.text << " (" << active->pattern.eventCount()
-                                      << " events/batch)\n";
+                                      << " events/batch, period=" << active->pattern.publishPeriod.count()
+                                      << " ms, nominal=" << active->pattern.nominalEventsPerSecond()
+                                      << " events/s)\n" << std::flush;
                         } catch (const std::exception &e) {
                             std::cerr << "Cannot start task: " << e.what() << '\n';
                         }
@@ -171,6 +217,7 @@ class Generator {
                                   << active->command << '\n';
                     }
                 } else if (active && (command.text.empty() || active->command == command.text)) {
+                    logSummary(*active);
                     std::cout << "Stopped " << active->command << '\n';
                     active.reset();
                 }
@@ -182,12 +229,15 @@ class Generator {
 
             if (active && std::chrono::steady_clock::now() >= nextTick) {
                 publish(*active);
-                nextTick += 1s;
+                nextTick += active->pattern.publishPeriod;
                 const auto now = std::chrono::steady_clock::now();
 
                 // Do not emit a burst to catch up after the publisher has fallen behind.
                 if (nextTick < now) {
-                    nextTick = now + 1s;
+                    const auto overdue = now - nextTick;
+                    const auto skipped = overdue / active->pattern.publishPeriod + 1;
+                    active->skippedDeadlines += static_cast<std::uint64_t>(skipped);
+                    nextTick += active->pattern.publishPeriod * skipped;
                 }
             }
         }

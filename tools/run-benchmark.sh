@@ -145,6 +145,10 @@ for ((repetition=1; repetition<=repetitions; ++repetition)); do
                 > "$client_log" 2>&1
             client_exit=$?
             if ((client_exit == 0)) && [[ -f "$output_prefix-summary.csv" ]]; then
+                for ((attempt=0; attempt<50; ++attempt)); do
+                    grep -Fq "Generator summary" "$server_log" && break
+                    sleep 0.1
+                done
                 status=passed
             fi
         else

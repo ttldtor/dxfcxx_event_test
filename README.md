@@ -34,8 +34,11 @@ Studio. Run any executable with `--help` to see all options.
 
 `latency_server` is a QD publisher. It listens on `--address` (default `:7400`) and waits for a client to subscribe to
 a task string. It supports one active task at a time, creates stable synthetic event objects for that task, and
-publishes one combined event/marker batch per second until the subscription is removed. `--monitoring-stat` controls
-the QD statistics period and accepts `0` to disable it.
+publishes combined event/marker batches at the task's configured cadence until the subscription is removed. The
+marker timestamp is captured immediately before `publishEvents()`; server logs separately report preparation time,
+publisher call time, achieved rate, and missed publication deadlines. `--monitoring-stat` controls the QD statistics
+period and accepts `0` to disable it. For portable sub-20-ms scheduling, the generator yields during the final 20 ms
+before a deadline; high-frequency profiles can therefore consume one CPU core on the publisher.
 
 `latency_client` opens a `STREAM_FEED` connection, requests the task, discards the warm-up interval, and records
 latency during the measurement interval. Its main options are:
@@ -51,9 +54,10 @@ latency during the measurement interval. Its main options are:
 | `--monitoring-stat` | `10s` | QD statistics period; `0` disables it. |
 | `--output` | `latency` | Path and filename prefix for generated CSV files. |
 
-The task DSL is `SUB:<type><quantity>[;...]`, where `Q`, `T`, and `S` mean Quote, Trade, and Summary. Each type may
-occur once and quantities must be positive. For example, `SUB:Q1000;S1000;T1000` publishes 3,000 events per batch;
-`Q100` creates symbols `Q00` through `Q99`.
+The task DSL is `SUB:<type><quantity>[;...][@<period>]`, where `Q`, `T`, and `S` mean Quote, Trade, and Summary. Each
+type may occur once and quantities must be positive. The default period is `1s`. For example,
+`SUB:Q500;S500;T500@10ms` publishes 1,500 events every 10 ms (150,000 events/s); `Q100` creates symbols `Q00` through
+`Q99`.
 
 `latency_analyzer` is a standalone post-processing utility and does not connect to dxFeed. It reads a directory of
 latency summaries and captured QD logs, then writes `monitoring.csv` and `monitoring-summary.csv`. Pass
@@ -97,10 +101,11 @@ the same `TZ` setting as the machine that produced them.
 
 ## Repeated local benchmark suite
 
-The repository includes native launchers for a longer comparison suite. They run three repetitions of four mixed
-profiles: 3,000, 15,000, 30,000, and 150,000 events per second. The largest profile contains 50,000 Quote, 50,000
-Trade, and 50,000 Summary events. Every run uses a one-minute warm-up, a ten-minute measurement, ten-second windows,
-and a fresh server/client pair. Profile order rotates between repetitions and a 30-second cool-down separates runs.
+The repository includes native launchers for a longer cadence comparison suite. They run three repetitions of four
+mixed profiles, all nominally producing 150,000 events/s: 150,000 events every second, 15,000 every 100 ms, 1,500
+every 10 ms, and 150 every 1 ms. The 1 ms profile is a scheduler/publisher stress case and should be interpreted
+separately. Every run uses a one-minute warm-up, a ten-minute measurement, ten-second windows, and a fresh
+server/client pair. Profile order rotates between repetitions and a 30-second cool-down separates runs.
 
 Build the Release binaries first, then run the launcher for the host operating system. On Windows:
 
@@ -119,13 +124,13 @@ Both launchers read `tools/benchmark-suite.conf`; pass `-Config` or `--config` t
 written below `benchmark-results/<UTC timestamp>/`. A full default run takes approximately two hours and twenty
 minutes plus any machine-dependent startup overhead.
 
-Each output prefix includes its repetition, for example `q50k-t50k-s50k-r02`. The analyzer additionally writes
+Each output prefix includes its repetition, for example `150k-100ms-r02`. The analyzer additionally writes
 `latency-runs.csv`, `latency-comparison.csv`, `monitoring-comparison.csv`, and a concise `REPORT.md`. Comparison CSVs
 contain the minimum, median, and maximum of run-level values; original summaries and logs remain available for more
 detailed analysis. A failed run is recorded in `run-manifest.csv`, its partial CSV files are preserved with a
 `.partial.csv` suffix, and the remaining profiles still run.
 
-The client retains exact latency values to calculate whole-run percentiles. The 150,000 events/s profile records 90
+The client retains exact latency values to calculate whole-run percentiles. Each cadence profile records up to 90
 million event samples over ten minutes and can temporarily require several gigabytes of memory while final totals
 are copied and sorted. Run the suite on an otherwise idle machine with sufficient RAM. The launchers are intended
 for local native measurements; GitHub Actions only performs their dry-run validation because hosted-runner latency

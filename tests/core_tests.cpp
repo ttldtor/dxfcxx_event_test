@@ -28,9 +28,18 @@ int main(int argc, char **argv) {
     if (parsed) {
         check(parsed->toString() == "SUB:Q100;S1;T5", "task round trip");
         check(parsed->eventCount() == 106, "total quantity");
+        check(parsed->publishPeriod == std::chrono::seconds{1}, "default publish period");
         const auto q = parsed->symbols(EventKind::QUOTE);
         check(q.size() == 100 && q.front() == "Q00" && q.back() == "Q99", "Q100 symbols");
     }
+
+    const auto cadence = parseTask("SUB:Q500;T500;S500@10ms");
+    check(cadence && cadence->toString() == "SUB:Q500;T500;S500@10ms", "cadence task round trip");
+    check(cadence && cadence->publishPeriod == std::chrono::milliseconds{10}, "millisecond publish period");
+    check(cadence && cadence->nominalEventsPerSecond() == 150'000, "nominal event rate");
+    check(cadence && cadence->batchCount(std::chrono::milliseconds{25}) == 3, "partial period rounded up");
+    const auto secondsCadence = parseTask("SUB:Q1@2s");
+    check(secondsCadence && secondsCadence->toString() == "SUB:Q1@2s", "second period canonicalized");
 
     check(!parseTask("SUB:"), "empty task rejected");
     check(!parseTask("SUB:Q0"), "zero rejected");
@@ -38,6 +47,9 @@ int main(int argc, char **argv) {
     check(!parseTask("SUB:X1"), "unknown type rejected");
     check(!parseTask("SUB:Q1junk"), "trailing input rejected");
     check(!parseTask("SUB:Q1;"), "trailing separator rejected");
+    check(!parseTask("SUB:Q1@"), "missing publish period rejected");
+    check(!parseTask("SUB:Q1@0ms"), "zero publish period rejected");
+    check(!parseTask("SUB:Q1@10ms@20ms"), "duplicate publish period rejected");
     check(!parseTask("SUB:Q999999999999999999999999999999"), "overflow rejected");
     check(parseDuration("10s") == std::chrono::seconds{10}, "seconds duration");
     check(parseDuration("2m") == std::chrono::minutes{2}, "minutes duration");

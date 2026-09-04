@@ -117,6 +117,11 @@ for ($repetition = 1; $repetition -le $repetitions; ++$repetition) {
             $clientExit = $LASTEXITCODE
             if ($clientExit -ne 0) { throw "Client exited with code $clientExit" }
             if (-not (Test-Path -LiteralPath "$outputPrefix-summary.csv")) { throw "Client summary was not produced" }
+            for ($attempt = 0; $attempt -lt 50; ++$attempt) {
+                if ((Test-Path $serverOut) -and
+                    (Select-String -LiteralPath $serverOut -SimpleMatch "Generator summary" -Quiet)) { break }
+                Start-Sleep -Milliseconds 100
+            }
             $status = "passed"
         } catch {
             $failed = $true

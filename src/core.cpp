@@ -55,7 +55,31 @@ std::string TaskPattern::toString() const {
         result += std::to_string(items[i].quantity);
     }
 
+    if (publishPeriod != std::chrono::seconds{1}) {
+        result.push_back('@');
+        if (publishPeriod.count() % 1000 == 0) {
+            result += std::to_string(publishPeriod.count() / 1000);
+            result.push_back('s');
+        } else {
+            result += std::to_string(publishPeriod.count());
+            result += "ms";
+        }
+    }
+
     return result;
+}
+
+double TaskPattern::nominalEventsPerSecond() const {
+    return static_cast<double>(eventCount()) * 1000.0 / static_cast<double>(publishPeriod.count());
+}
+
+std::size_t TaskPattern::batchCount(std::chrono::milliseconds duration) const {
+    if (duration <= std::chrono::milliseconds::zero()) {
+        return 0;
+    }
+
+    const auto periods = duration.count() / publishPeriod.count();
+    return static_cast<std::size_t>(periods + (duration.count() % publishPeriod.count() != 0));
 }
 
 std::optional<std::size_t> TaskPattern::quantity(EventKind kind) const {
@@ -94,16 +118,18 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
         return std::unexpected(ParseError{0, "expected SUB:"});
     }
 
+    const auto separator = text.find('@', PREFIX.size());
+    const auto patternEnd = separator == std::string_view::npos ? text.size() : separator;
     std::size_t pos = PREFIX.size();
 
-    if (pos == text.size()) {
+    if (pos == patternEnd) {
         return std::unexpected(ParseError{pos, "expected event pattern"});
     }
 
     TaskPattern task;
     std::set<EventKind> seen;
 
-    while (pos < text.size()) {
+    while (pos < patternEnd) {
         const auto itemPos = pos;
         const auto kind = parseKind(text[pos]);
 
@@ -118,7 +144,7 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
         ++pos;
         const auto numberStart = pos;
         std::size_t quantity{};
-        const auto [ptr, ec] = std::from_chars(text.data() + pos, text.data() + text.size(), quantity);
+        const auto [ptr, ec] = std::from_chars(text.data() + pos, text.data() + patternEnd, quantity);
 
         if (ec == std::errc::result_out_of_range) {
             return std::unexpected(ParseError{numberStart, "quantity is too large"});
@@ -142,7 +168,7 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
             return std::unexpected(ParseError{itemPos, "total quantity is too large"});
         }
 
-        if (pos == text.size()) {
+        if (pos == patternEnd) {
             break;
         }
 
@@ -152,9 +178,26 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
 
         ++pos;
 
-        if (pos == text.size()) {
+        if (pos == patternEnd) {
             return std::unexpected(ParseError{pos, "trailing separator"});
         }
+    }
+
+    if (separator != std::string_view::npos) {
+        const auto periodText = text.substr(separator + 1);
+
+        if (periodText.empty()) {
+            return std::unexpected(ParseError{separator + 1, "expected publish period"});
+        }
+        if (periodText.find('@') != std::string_view::npos) {
+            return std::unexpected(ParseError{separator + 1 + periodText.find('@'), "duplicate publish period"});
+        }
+
+        const auto period = parseDuration(periodText);
+        if (!period) {
+            return std::unexpected(ParseError{separator + 1, period.error()});
+        }
+        task.publishPeriod = *period;
     }
 
     return task;

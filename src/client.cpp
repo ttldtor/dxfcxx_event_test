@@ -6,6 +6,7 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
@@ -77,7 +78,7 @@ Config parseArgs(int argc, char **argv) {
         if (arg == "--help") {
             std::cout << "Usage: latency_client [options]\n"
                          "  --address HOST:PORT       default 127.0.0.1:7400\n"
-                         "  --task SUB:Q100;S1;T5    default SUB:Q100\n"
+                         "  --task SUB:Q100;S1;T5@100ms    default SUB:Q100@1s\n"
                          "  --warmup 30s             --duration 5m\n"
                          "  --window 10s             --batch-timeout 30s\n"
                          "  --monitoring-stat 10s    0 disables QD statistics\n"
@@ -161,12 +162,12 @@ class Collector {
     const std::chrono::milliseconds batchTimeout_;
     mutable std::mutex mutex_;
     bool measuring_{};
+    bool acceptingNewBatches_{};
+    std::optional<std::int32_t> startBoundarySequence_;
     std::vector<latency::Sample> eventWindow_, batchWindow_;
     std::array<std::vector<std::int64_t>, EVENT_KINDS.size()> eventGlobalByKind_;
     std::vector<std::int64_t> batchGlobal_;
     std::map<std::int32_t, PendingBatch> pending_;
-    std::map<std::int64_t, std::int32_t> secondToSequence_;
-    std::map<std::int64_t, std::vector<PendingEvent>> quotesBySecond_;
     std::size_t callbacksWindow_{}, callbacksTotal_{}, negativeWindow_{}, negativeTotal_{};
     std::size_t missingWindow_{}, missingTotal_{};
 
@@ -180,14 +181,20 @@ class Collector {
     // Extract the wire fields used to associate each supported event type with a published batch.
     static std::optional<Description> describe(const std::shared_ptr<EventType> &event) {
         if (auto value = event->sharedAs<Quote>()) {
+            const auto encodedSequence = value->getBidSize();
+
+            if (!std::isfinite(encodedSequence) || encodedSequence <= 0 ||
+                encodedSequence >= static_cast<double>(TextMessage::MAX_SEQUENCE) ||
+                std::trunc(encodedSequence) != encodedSequence) {
+                return std::nullopt;
+            }
+
             return Description{latency::EventKind::QUOTE, value->getEventSymbol(),
-                               value->getSequence() == 0 ? std::nullopt : std::optional{value->getSequence()},
-                               value->getTimeNanos()};
+                               static_cast<std::int32_t>(encodedSequence), std::nullopt};
         }
 
         if (auto value = event->sharedAs<Trade>()) {
-            return Description{latency::EventKind::TRADE, value->getEventSymbol(), value->getSequence(),
-                               value->getTimeNanos()};
+            return Description{latency::EventKind::TRADE, value->getEventSymbol(), value->getSequence(), std::nullopt};
         }
 
         if (auto value = event->sharedAs<Summary>()) {
@@ -253,6 +260,10 @@ class Collector {
     }
 
     void addEvent(std::int32_t sequence, PendingEvent event) {
+        if (!acceptBatch(sequence)) {
+            return;
+        }
+
         auto [it, inserted] = pending_.try_emplace(sequence);
         auto &batch = it->second;
 
@@ -264,6 +275,21 @@ class Collector {
         ++batch.received;
         batch.events.push_back(std::move(event));
         complete(it);
+    }
+
+    // The first sequence observed after the warm-up may already be partially delivered. Exclude that whole
+    // publication from the measured set. After the measurement deadline, only batches already in flight may finish.
+    bool acceptBatch(std::int32_t sequence) {
+        if (!startBoundarySequence_) {
+            startBoundarySequence_ = sequence;
+            return false;
+        }
+
+        if (sequence == *startBoundarySequence_) {
+            return false;
+        }
+
+        return acceptingNewBatches_ || pending_.contains(sequence);
     }
 
     public:
@@ -295,10 +321,15 @@ class Collector {
         eventWindow_.clear();
         batchWindow_.clear();
         pending_.clear();
-        secondToSequence_.clear();
-        quotesBySecond_.clear();
         callbacksWindow_ = negativeWindow_ = missingWindow_ = 0;
+        startBoundarySequence_.reset();
+        acceptingNewBatches_ = true;
         measuring_ = true;
+    }
+
+    void endMeasurement() {
+        std::lock_guard lock{mutex_};
+        acceptingNewBatches_ = false;
     }
 
     void handle(const std::vector<std::shared_ptr<EventType>> &events) {
@@ -321,6 +352,11 @@ class Collector {
                 }
 
                 const auto markerSequence = marker->getSequence();
+
+                if (!acceptBatch(markerSequence)) {
+                    continue;
+                }
+
                 auto [it, inserted] = pending_.try_emplace(markerSequence);
                 it->second.timestamp = *timestamp;
 
@@ -329,18 +365,6 @@ class Collector {
                 }
 
                 it->second.lastObserved = std::max(it->second.lastObserved, observed);
-                const auto second = *timestamp / 1'000'000'000;
-                secondToSequence_[second] = markerSequence;
-
-                // Quotes may arrive before the marker, so release those waiting for this publication second.
-                if (auto quotes = quotesBySecond_.find(second); quotes != quotesBySecond_.end()) {
-                    auto waiting = std::move(quotes->second);
-                    quotesBySecond_.erase(quotes);
-
-                    for (auto &quote : waiting) {
-                        addEvent(markerSequence, std::move(quote));
-                    }
-                }
 
                 if (const auto current = pending_.find(markerSequence); current != pending_.end()) {
                     complete(current);
@@ -360,16 +384,6 @@ class Collector {
 
             if (description->sequence) {
                 addEvent(*description->sequence, std::move(pendingEvent));
-            } else if (description->kind == latency::EventKind::QUOTE && description->publishTime) {
-                // Quote sequence and fractional time are not preserved by the tested scheme. At one batch per second,
-                // the exchange-time second is an unambiguous synthetic correlation key.
-                const auto second = *description->publishTime / 1'000'000'000;
-
-                if (const auto known = secondToSequence_.find(second); known != secondToSequence_.end()) {
-                    addEvent(known->second, std::move(pendingEvent));
-                } else {
-                    quotesBySecond_[second].push_back(std::move(pendingEvent));
-                }
             }
         }
     }
@@ -400,13 +414,6 @@ class Collector {
             }
         }
 
-        const auto cutoffSecond = cutoff / 1'000'000'000;
-        std::erase_if(secondToSequence_, [&](const auto &item) {
-            return item.first < cutoffSecond;
-        });
-        std::erase_if(quotesBySecond_, [&](const auto &item) {
-            return item.first < cutoffSecond;
-        });
         Window result{std::move(eventWindow_), std::move(batchWindow_), callbacksWindow_, negativeWindow_,
                       missingWindow_, pending_.size()};
         eventWindow_.clear();
@@ -432,6 +439,8 @@ class Reporter {
     std::ofstream summary_, outliers_;
     std::int64_t runStart_{};
     std::size_t expectedEventsPerBatch_{};
+    std::int64_t publishPeriodMs_{};
+    double nominalEventsPerSecond_{};
     std::array<std::size_t, EVENT_KINDS.size()> expectedEventsByKind_{};
     std::size_t windowIndex_{};
 
@@ -489,8 +498,8 @@ class Reporter {
                       std::size_t expectedPerBatch, std::size_t callbacks, std::size_t negative, std::size_t missing,
                       std::size_t pending) {
         summary_ << latency::utcTimestamp(start) << ',' << latency::utcTimestamp(end) << ',' << kind << ',' << s.count
-                 << ',' << expectedPerBatch << ',' << callbacks << ',' << negative << ',' << missing << ',' << pending
-                 << ','
+                 << ',' << expectedPerBatch << ',' << publishPeriodMs_ << ',' << nominalEventsPerSecond_ << ','
+                 << callbacks << ',' << negative << ',' << missing << ',' << pending << ','
                  << microseconds(s.minimum) << ',' << microseconds(s.mean) << ',' << microseconds(s.p50) << ','
                  << microseconds(s.p90) << ',' << microseconds(s.p95) << ',' << microseconds(s.p99) << ','
                  << microseconds(s.p999) << ',' << microseconds(s.maximum) << ',' << microseconds(s.q1) << ','
@@ -516,7 +525,8 @@ class Reporter {
     public:
     // Opens both reports together so a run cannot proceed with only one of its outputs available.
     Reporter(const std::filesystem::path &prefix, const latency::TaskPattern &pattern)
-        : runStart_(latency::unixNanosNow()), expectedEventsPerBatch_(pattern.eventCount()) {
+        : runStart_(latency::unixNanosNow()), expectedEventsPerBatch_(pattern.eventCount()),
+          publishPeriodMs_(pattern.publishPeriod.count()), nominalEventsPerSecond_(pattern.nominalEventsPerSecond()) {
         for (const auto kind : EVENT_KINDS) {
             expectedEventsByKind_[eventKindIndex(kind)] = pattern.quantity(kind).value_or(0);
         }
@@ -537,8 +547,9 @@ class Reporter {
             throw std::runtime_error("cannot open output CSV files");
         }
 
-        summary_ << "window_start_utc,window_end_utc,sample_kind,samples,expected_per_batch,callbacks,clock_anomalies,"
-                    "missing_batches,pending_batches,min_us,mean_us,p50_us,p90_us,p95_us,p99_us,p999_us,max_us,q1_us,"
+        summary_ << "window_start_utc,window_end_utc,sample_kind,samples,expected_per_batch,publish_period_ms,"
+                    "nominal_events_per_second,callbacks,clock_anomalies,missing_batches,pending_batches,min_us,"
+                    "mean_us,p50_us,p90_us,p95_us,p99_us,p999_us,max_us,q1_us,"
                     "q3_us,iqr_us,"
                     "outlier_threshold_us,outliers\n";
         outliers_ << "observed_at_utc,sample_kind,event_type,symbol,publish_time_ns,latency_ns,window_threshold_ns\n";
@@ -629,10 +640,8 @@ int main(int argc, char **argv) {
         }
 
         const auto expected = pattern->eventCount();
-        const auto windowBatches =
-            static_cast<std::size_t>(std::max<std::int64_t>(1, (config.window.count() + 999) / 1000));
-        const auto runBatches =
-            static_cast<std::size_t>(std::max<std::int64_t>(1, (config.duration.count() + 999) / 1000));
+        const auto windowBatches = std::max<std::size_t>(1, pattern->batchCount(config.window));
+        const auto runBatches = std::max<std::size_t>(1, pattern->batchCount(config.duration));
         Collector collector{*pattern, config.batchTimeout, expected * windowBatches, runBatches};
         Reporter reporter{config.output, *pattern};
 
@@ -669,7 +678,9 @@ int main(int argc, char **argv) {
         control->addSymbols(config.task);
         endpoint->connect(config.address);
         std::cout << "Connected to " << config.address << ", task " << config.task << ", expected " << expected
-                  << " events/batch. Warm-up " << config.warmup.count() << " ms.\n";
+                  << " events/batch every " << pattern->publishPeriod.count() << " ms (nominal "
+                  << pattern->nominalEventsPerSecond() << " events/s). Warm-up " << config.warmup.count()
+                  << " ms.\n";
 
         if (!waitFor(config.warmup)) {
             control->removeSymbols(config.task);
@@ -701,6 +712,7 @@ int main(int argc, char **argv) {
             }
         }
 
+        collector.endMeasurement();
         control->removeSymbols(config.task);
         const auto drainDeadline = std::chrono::steady_clock::now() + config.batchTimeout;
 

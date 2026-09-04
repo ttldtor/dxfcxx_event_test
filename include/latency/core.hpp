@@ -32,10 +32,12 @@ struct PatternItem {
     friend bool operator==(const PatternItem &, const PatternItem &) = default;
 };
 
-/** A parsed subscription task, for example `SUB:Q100;S1;T5`. */
+/** A parsed subscription task, for example `SUB:Q100;S1;T5@100ms`. */
 struct TaskPattern {
     /** Event types and instrument counts in their source order. */
     std::vector<PatternItem> items;
+    /** Interval between server publications. */
+    std::chrono::milliseconds publishPeriod{std::chrono::seconds{1}};
 
     /**
      * Returns the total number of events generated in each batch.
@@ -67,6 +69,12 @@ struct TaskPattern {
      */
     [[nodiscard]] std::optional<std::size_t> quantity(EventKind kind) const;
 
+    /** Returns the configured event rate, excluding the one marker record per batch. */
+    [[nodiscard]] double nominalEventsPerSecond() const;
+
+    /** Returns the number of publication slots intersecting a positive duration, rounded up. */
+    [[nodiscard]] std::size_t batchCount(std::chrono::milliseconds duration) const;
+
     /** Compares all fields of two task patterns. */
     friend bool operator==(const TaskPattern &, const TaskPattern &) = default;
 };
@@ -80,11 +88,11 @@ struct ParseError {
 };
 
 /**
- * Parses a subscription task in the `SUB:<type><quantity>[;...]` DSL.
+ * Parses a subscription task in the `SUB:<type><quantity>[;...][@<period>]` DSL.
  *
  * Supported type codes are `Q`, `T`, and `S`. Each type may occur at most once and its quantity must be positive.
  *
- * @param text The task text, for example `SUB:Q100;S1;T5`.
+ * @param text The task text, for example `SUB:Q100;S1;T5@100ms`.
  * @return The parsed pattern, or a positional parse error.
  */
 std::expected<TaskPattern, ParseError> parseTask(std::string_view text);
