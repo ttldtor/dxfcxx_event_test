@@ -239,7 +239,8 @@ double percentileInc(const std::vector<std::int64_t> &sortedValues, double perce
     const auto upper = static_cast<std::size_t>(std::ceil(index));
     const double fraction = index - static_cast<double>(lower);
 
-    return static_cast<double>(sortedValues[lower]) + fraction * (sortedValues[upper] - sortedValues[lower]);
+    return static_cast<double>(sortedValues[lower]) +
+           fraction * static_cast<double>(sortedValues[upper] - sortedValues[lower]);
 }
 
 Statistics calculateStatistics(const std::vector<std::int64_t> &values) {
@@ -256,7 +257,7 @@ Statistics calculateStatistics(const std::vector<std::int64_t> &values) {
     std::ranges::sort(sorted);
     result.minimum = static_cast<double>(sorted.front());
     result.maximum = static_cast<double>(sorted.back());
-    result.mean = std::accumulate(sorted.begin(), sorted.end(), 0.0) / sorted.size();
+    result.mean = std::accumulate(sorted.begin(), sorted.end(), 0.0) / static_cast<double>(sorted.size());
     result.p50 = percentileInc(sorted, .50);
     result.p90 = percentileInc(sorted, .90);
     result.p95 = percentileInc(sorted, .95);

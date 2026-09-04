@@ -331,7 +331,7 @@ std::expected<Measurement, std::string> readMeasurement(const std::filesystem::p
 }
 
 std::expected<std::vector<MonitoringSample>, std::string>
-readMonitoringLog(const std::filesystem::path &path, std::string profile, std::string process,
+readMonitoringLog(const std::filesystem::path &path, const std::string &profile, const std::string &process,
                   const Measurement &measurement, std::chrono::milliseconds monitoringPeriod) {
     std::ifstream input{path};
 
@@ -442,7 +442,7 @@ std::expected<void, std::string> openOutput(std::ofstream &output, const std::fi
 }
 
 std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const std::filesystem::path &path,
-                                                                         std::string profile) {
+                                                                         const std::string &profile) {
     std::ifstream input{path};
 
     if (!input) {
@@ -456,7 +456,7 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
     }
 
     const auto headings = parseCsvRow(line);
-    const auto indexOf = [&](std::string_view name) -> std::optional<std::size_t> {
+    const auto indexOf = [&](const std::string_view name) -> std::optional<std::size_t> {
         const auto found = std::ranges::find(headings, name);
 
         return found == headings.end() ? std::nullopt
@@ -647,7 +647,7 @@ std::expected<MonitoringAnalysis, std::string> analyzeMonitoringDirectory(const 
             return std::unexpected(measurement.error());
         }
 
-        for (const auto process : {std::string{"server"}, std::string{"client"}}) {
+        for (const auto &process : {std::string{"server"}, std::string{"client"}}) {
             auto samples = readMonitoringLog(runDirectory / (profile + "-" + process + ".log"), profile, process,
                                              *measurement, monitoringPeriod);
 
@@ -693,7 +693,7 @@ std::expected<MonitoringAnalysis, std::string> analyzeMonitoringDirectory(const 
             const auto sum = std::accumulate(values.begin(), values.end(), 0.0);
             analysis.aggregates.push_back(MonitoringAggregate{
                 key.first, key.second, samples.front()->nominalEventsPerSecond, std::string{metric.name}, values.size(),
-                minimum, sum / values.size(), maximum, sum});
+                minimum, sum / static_cast<double>(values.size()), maximum, sum});
         }
     }
 

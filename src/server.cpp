@@ -9,7 +9,6 @@
 #include <csignal>
 #include <deque>
 #include <format>
-#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -137,15 +136,17 @@ class Generator {
         const auto milliseconds = [](std::chrono::nanoseconds value) {
             return std::chrono::duration<double, std::milli>(value).count();
         };
+        const auto actualBatchesPerSecond = elapsed > 0 ? active.publications / elapsed : 0.0;
+        const auto actualEventsPerSecond =
+            elapsed > 0 ? active.publications * active.pattern.eventCount() / elapsed : 0.0;
 
-        std::cout << std::fixed << std::setprecision(3) << "Generator summary " << active.command
-                  << ": publications=" << active.publications << " skipped-deadlines=" << active.skippedDeadlines
-                  << " actual-batches/s=" << (elapsed > 0 ? active.publications / elapsed : 0) << " actual-events/s="
-                  << (elapsed > 0 ? active.publications * active.pattern.eventCount() / elapsed : 0)
-                  << " preparation-ms(avg/max)=" << milliseconds(active.preparationTotal) / publications << '/'
-                  << milliseconds(active.preparationMaximum)
-                  << " publish-ms(avg/max)=" << milliseconds(active.publishTotal) / publications << '/'
-                  << milliseconds(active.publishMaximum) << '\n'
+        std::cout << std::format("Generator summary {}: publications={} skipped-deadlines={} "
+                                 "actual-batches/s={:.3f} actual-events/s={:.3f} "
+                                 "preparation-ms(avg/max)={:.3f}/{:.3f} publish-ms(avg/max)={:.3f}/{:.3f}\n",
+                                 active.command, active.publications, active.skippedDeadlines, actualBatchesPerSecond,
+                                 actualEventsPerSecond, milliseconds(active.preparationTotal) / publications,
+                                 milliseconds(active.preparationMaximum),
+                                 milliseconds(active.publishTotal) / publications, milliseconds(active.publishMaximum))
                   << std::flush;
     }
 
