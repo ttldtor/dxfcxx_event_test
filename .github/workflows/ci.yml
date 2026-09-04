@@ -59,6 +59,15 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
       - name: Smoke-test commands
         run: |
+          docker run --rm latency-test:${{ strategy.job-index }} sh -ec '
+            for binary in latency_server latency_client latency_analyzer; do
+              dependencies="$(ldd "/opt/latency/bin/$binary")"
+              printf "%s\n" "$dependencies"
+              ! printf "%s\n" "$dependencies" | grep --fixed-strings --quiet "not found"
+              printf "%s\n" "$dependencies" | grep --fixed-strings --quiet \
+                "libstdc++.so.6 => /opt/gcc-runtime/libstdc++.so.6"
+            done
+          '
           docker run --rm latency-test:${{ strategy.job-index }} latency_server --help
           docker run --rm latency-test:${{ strategy.job-index }} latency_client --help
           docker run --rm latency-test:${{ strategy.job-index }} latency_analyzer --help
@@ -75,10 +84,46 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/latency-output"
+
+          dump_diagnostics() {
+            exit_code=$?
+            if test "$exit_code" -eq 0; then
+              return
+            fi
+            echo "::group::Latency server state"
+            docker inspect latency-server || true
+            echo "::endgroup::"
+            echo "::group::Latency server log"
+            docker logs latency-server 2>&1 || true
+            echo "::endgroup::"
+            if test -f "$RUNNER_TEMP/latency-output/smoke-client.log"; then
+              echo "::group::Latency client log"
+              cat "$RUNNER_TEMP/latency-output/smoke-client.log"
+              echo "::endgroup::"
+            fi
+          }
+          trap dump_diagnostics EXIT
+
           docker network create latency-test
-          docker run --detach --rm --name latency-server --network latency-test \
+          docker run --detach --name latency-server --network latency-test \
             latency-test:ci latency_server --address :7400 --monitoring-stat 1s
-          sleep 2
+
+          server_ready=false
+          for attempt in {1..30}; do
+            if ! test "$(docker inspect --format '{{.State.Running}}' latency-server)" = true; then
+              echo "Latency server exited before becoming ready"
+              exit 1
+            fi
+            docker logs latency-server > "$RUNNER_TEMP/latency-server-startup.log" 2>&1
+            if grep --fixed-strings --quiet "Latency server listening on" \
+              "$RUNNER_TEMP/latency-server-startup.log"; then
+              server_ready=true
+              break
+            fi
+            sleep 1
+          done
+          test "$server_ready" = true
+
           docker run --rm --network latency-test \
             --mount "type=bind,source=$RUNNER_TEMP/latency-output,target=/work" \
             latency-test:ci latency_client --address latency-server:7400 \
@@ -94,5 +139,5 @@ jobs:
       - name: Stop server
         if: always()
         run: |
-          docker stop latency-server || true
+          docker rm --force latency-server || true
           docker network rm latency-test || true

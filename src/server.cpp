@@ -315,7 +315,7 @@ int main(int argc, char **argv) {
         const auto listenerId = observable->addChangeListener(listener);
 
         endpoint->connect(config.address);
-        std::cout << "Latency server listening on " << config.address << ". Press Ctrl+C to stop.\n";
+        std::cout << "Latency server listening on " << config.address << ". Press Ctrl+C to stop.\n" << std::flush;
 
         while (!interrupted.load()) {
             std::this_thread::sleep_for(200ms);
