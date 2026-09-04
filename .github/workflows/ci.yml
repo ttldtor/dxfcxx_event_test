@@ -129,13 +129,93 @@ jobs:
             latency-test:ci latency_client --address latency-server:7400 \
               --task "SUB:Q10;S10;T10" --warmup 2s --duration 3s --window 1s \
               --batch-timeout 2s --monitoring-stat 1s --output smoke \
-            > "$RUNNER_TEMP/latency-output/smoke-client.log" 2>&1
+            2>&1 | tee "$RUNNER_TEMP/latency-output/smoke-client.log"
           docker logs latency-server > "$RUNNER_TEMP/latency-output/smoke-server.log" 2>&1
-          test -s "$RUNNER_TEMP/latency-output/smoke-summary.csv"
+          echo "::group::Latency server log"
+          cat "$RUNNER_TEMP/latency-output/smoke-server.log"
+          echo "::endgroup::"
           docker run --rm \
             --mount "type=bind,source=$RUNNER_TEMP/latency-output,target=/work" \
-            latency-test:ci latency_analyzer --run-directory /work --monitoring-period 1s
-          test -s "$RUNNER_TEMP/latency-output/monitoring-summary.csv"
+            latency-test:ci latency_analyzer --run-directory /work --monitoring-period 1s \
+            2>&1 | tee "$RUNNER_TEMP/latency-output/smoke-analyzer.log"
+
+          for result in \
+            smoke-client.log \
+            smoke-server.log \
+            smoke-analyzer.log \
+            smoke-summary.csv \
+            smoke-outliers.csv \
+            monitoring.csv \
+            monitoring-summary.csv; do
+            test -s "$RUNNER_TEMP/latency-output/$result"
+          done
+      - name: Publish end-to-end results
+        if: always()
+        shell: bash
+        env:
+          RESULTS_DIR: ${{ runner.temp }}/latency-output
+          TEST_STATUS: ${{ job.status }}
+        run: |
+          if docker inspect latency-server > /dev/null 2>&1; then
+            mkdir -p "$RESULTS_DIR"
+            docker logs latency-server > "$RESULTS_DIR/smoke-server.log" 2>&1 || true
+          fi
+
+          echo "::group::Generated end-to-end files"
+          if test -d "$RESULTS_DIR"; then
+            find "$RESULTS_DIR" -maxdepth 1 -type f -printf '%f\t%k KiB\n' | sort
+          else
+            echo "No result directory was created"
+          fi
+          echo "::endgroup::"
+
+          for log in smoke-client.log smoke-server.log smoke-analyzer.log; do
+            if test -s "$RESULTS_DIR/$log"; then
+              echo "::group::$log"
+              cat "$RESULTS_DIR/$log"
+              echo "::endgroup::"
+            fi
+          done
+
+          append_report() {
+            title=$1
+            report=$2
+            language=$3
+            echo "### $title" >> "$GITHUB_STEP_SUMMARY"
+            if test -s "$report"; then
+              printf '```%s\n' "$language" >> "$GITHUB_STEP_SUMMARY"
+              cat "$report" >> "$GITHUB_STEP_SUMMARY"
+              printf '```\n' >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo '_Not produced._' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+
+          {
+            echo '## Linux container end-to-end'
+            echo
+            echo "- Status: **$TEST_STATUS**"
+            echo '- Task: `SUB:Q10;S10;T10`'
+            echo '- Warm-up: `2s`; measurement: `3s`; window: `1s`'
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          append_report 'Latency summary' "$RESULTS_DIR/smoke-summary.csv" csv
+          append_report 'Monitoring summary' "$RESULTS_DIR/monitoring-summary.csv" csv
+      - name: Upload end-to-end artifact
+        if: always()
+        id: e2e_artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-end-to-end-results
+          path: ${{ runner.temp }}/latency-output
+          if-no-files-found: warn
+      - name: Add artifact link to summary
+        if: always() && steps.e2e_artifact.outputs.artifact-url != ''
+        shell: bash
+        run: |
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo "[Download complete end-to-end results](${{ steps.e2e_artifact.outputs.artifact-url }})" \
+            >> "$GITHUB_STEP_SUMMARY"
       - name: Stop server
         if: always()
         run: |
