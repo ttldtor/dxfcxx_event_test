@@ -1,3 +1,6 @@
+# Copyright (c) 2026 ttldtor.
+# SPDX-License-Identifier: BSL-1.0
+
 cmake_minimum_required(VERSION 3.21)
 project(dxfcxx_event_test LANGUAGES CXX)
 

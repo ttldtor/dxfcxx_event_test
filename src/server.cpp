@@ -1,3 +1,6 @@
+// Copyright (c) 2026 ttldtor.
+// SPDX-License-Identifier: BSL-1.0
+
 #include "latency/core.hpp"
 
 #include <dxfeed_graal_cpp_api/api.hpp>

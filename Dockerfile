@@ -1,3 +1,6 @@
+# Copyright (c) 2026 ttldtor.
+# SPDX-License-Identifier: BSL-1.0
+
 FROM gcc:14-bookworm AS build
 
 ENV DEBIAN_FRONTEND=noninteractive
