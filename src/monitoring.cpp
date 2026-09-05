@@ -1060,23 +1060,48 @@ delivery ratio.
               "| Scenario | Read records/s | Read lag | CPU | Maximum buffer | Maximum dropped |\n"
               "|---|---:|---:|---:|---:|---:|\n";
 
-    const auto monitoringValue = [&](const std::string &scenario, std::string_view metric) {
+    const auto monitoringValue = [&](const std::string &scenario, std::string_view process, std::string_view metric) {
         const auto found = std::ranges::find_if(monitoringComparisons, [&](const ComparisonRow &row) {
-            return row.scenario == scenario && row.category == "client" && row.metric == metric;
+            return row.scenario == scenario && row.category == process && row.metric == metric;
         });
 
         return found == monitoringComparisons.end() ? RunComparison{} : found->comparison;
     };
 
     for (const auto &[scenario, rows] : scenarios) {
-        const auto readRate = monitoringValue(scenario, "read_data_rps_run_mean");
-        const auto readLag = monitoringValue(scenario, "read_data_lag_us_run_mean");
-        const auto cpu = monitoringValue(scenario, "cpu_percent_run_mean");
-        const auto buffer = monitoringValue(scenario, "buffer_run_max");
-        const auto dropped = monitoringValue(scenario, "dropped_run_sum");
+        const auto readRate = monitoringValue(scenario, "client", "read_data_rps_run_mean");
+        const auto readLag = monitoringValue(scenario, "client", "read_data_lag_us_run_mean");
+        const auto cpu = monitoringValue(scenario, "client", "cpu_percent_run_mean");
+        const auto buffer = monitoringValue(scenario, "client", "buffer_run_max");
+        const auto dropped = monitoringValue(scenario, "client", "dropped_run_sum");
         report << "| " << scenario << " | " << readRate.median << " | " << readLag.median / 1000.0 << " | "
                << cpu.median << "% | " << buffer.maximum << " | " << dropped.maximum << " |\n";
     }
+
+    report << R"(
+
+## Server monitoring
+
+The table shows medians across repetitions. Lag is in milliseconds; dropped is the largest per-run sum and buffer is the largest per-run high-water mark.
+
+| Scenario | Write records/s | Write lag | CPU | Maximum buffer | Maximum dropped |
+|---|---:|---:|---:|---:|---:|
+)";
+
+    for (const auto &[scenario, rows] : scenarios) {
+        const auto writeRate = monitoringValue(scenario, "server", "write_data_rps_run_mean");
+        const auto writeLag = monitoringValue(scenario, "server", "write_data_lag_us_run_mean");
+        const auto cpu = monitoringValue(scenario, "server", "cpu_percent_run_mean");
+        const auto buffer = monitoringValue(scenario, "server", "buffer_run_max");
+        const auto dropped = monitoringValue(scenario, "server", "dropped_run_sum");
+        report << "| " << scenario << " | " << writeRate.median << " | " << writeLag.median / 1000.0 << " | "
+               << cpu.median << "% | " << buffer.maximum << " | " << dropped.maximum << " |\n";
+    }
+
+    report << R"(
+
+`Dropped = 0` rules out drops counted by the corresponding QD endpoint, but it does not rule out normal FEED conflation.
+)";
 
     if (std::ranges::any_of(latencyRows, [](const LatencyRunRow &row) {
             return !row.integrityOk;

@@ -1,7 +1,8 @@
-started_utc=2026-09-04T14:53:42.6724798Z
-git_commit=aa1e6ef882e004d28ce220f0054a102bd3838223
+started_utc=2026-09-05T08:13:08.3208636Z
+git_commit=5088808cd7f30079c3b0de0ad82934fc5bac9146
 os=Microsoft Windows 10.0.26340
 architecture=X64
 processor_count=32
 binary_directory=C:\w\!active\dxfcxx_event_test\cmake-build-agent\Release
 suite_config=C:\w\!active\dxfcxx_event_test\tools\benchmark-suite.conf
+client_role=feed

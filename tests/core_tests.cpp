@@ -191,6 +191,11 @@ TEST_CASE("repeated benchmark comparison files") {
     const std::string reportText{std::istreambuf_iterator<char>{report}, {}};
 
     CHECK(reportText.contains("| example | stream-feed | 3 |"));
+    CHECK(reportText.contains("## Client monitoring"));
+    CHECK(reportText.contains("| Scenario | Read records/s | Read lag | CPU | Maximum buffer | Maximum dropped |"));
+    CHECK(reportText.contains("## Server monitoring"));
+    CHECK(reportText.contains("| Scenario | Write records/s | Write lag | CPU | Maximum buffer | Maximum dropped |"));
+    CHECK(reportText.contains("`Dropped = 0` rules out drops counted by the corresponding QD endpoint"));
 }
 
 TEST_CASE("invalid monitoring inputs are rejected") {

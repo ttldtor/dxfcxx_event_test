@@ -3,6 +3,7 @@
 #include <dxfeed_graal_cpp_api/api.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -13,10 +14,12 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -30,10 +33,35 @@ void onSignal(int) {
     interrupted.store(true);
 }
 
+enum class SubscriptionKind { QUOTE, TRADE, TRADE_ETH, SUMMARY, PROFILE };
+
+enum class CommandType { START, STOP, SYMBOLS_ADDED, SYMBOLS_REMOVED, SUBSCRIPTION_CLOSED };
+
 struct Command {
-    bool start{};
+    CommandType type{};
     std::string text;
+    SubscriptionKind subscription{};
+    std::vector<std::string> symbols;
 };
+
+constexpr std::size_t subscriptionKindIndex(SubscriptionKind kind) {
+    return static_cast<std::size_t>(kind);
+}
+
+SubscriptionKind subscriptionKind(latency::EventKind kind) {
+    switch (kind) {
+    case latency::EventKind::QUOTE:
+        return SubscriptionKind::QUOTE;
+    case latency::EventKind::TRADE:
+        return SubscriptionKind::TRADE;
+    case latency::EventKind::TRADE_ETH:
+        return SubscriptionKind::TRADE_ETH;
+    case latency::EventKind::SUMMARY:
+        return SubscriptionKind::SUMMARY;
+    }
+
+    throw std::invalid_argument("unknown event kind");
+}
 
 // Owns the worker thread that turns subscription changes into a single active publishing task.
 class Generator {
@@ -41,6 +69,7 @@ class Generator {
     std::mutex mutex_;
     std::condition_variable cv_;
     std::deque<Command> commands_;
+    std::array<std::unordered_set<std::string>, 5> subscribedSymbols_;
     bool stopping_{};
     std::thread thread_;
 
@@ -54,6 +83,30 @@ class Generator {
         std::chrono::nanoseconds publishTotal{}, publishMaximum{};
         std::chrono::steady_clock::time_point started{std::chrono::steady_clock::now()};
     };
+
+    struct PendingTask {
+        std::string command;
+        latency::TaskPattern pattern;
+        std::vector<std::string> symbols;
+    };
+
+    bool containsAll(SubscriptionKind kind, const std::vector<std::string> &symbols) const {
+        const auto &subscribed = subscribedSymbols_[subscriptionKindIndex(kind)];
+
+        return std::ranges::all_of(symbols, [&subscribed](const auto &symbol) {
+            return subscribed.contains(symbol);
+        });
+    }
+
+    bool subscriptionsReady(const PendingTask &pending) const {
+        if (!containsAll(SubscriptionKind::PROFILE, pending.symbols)) {
+            return false;
+        }
+
+        return std::ranges::all_of(pending.pattern.items, [this, &pending](const auto &item) {
+            return containsAll(subscriptionKind(item.kind), pending.symbols);
+        });
+    }
 
     // Allocate and initialize the stable event objects that are updated and republished on every tick.
     static std::vector<std::shared_ptr<EventType>> makeEvents(const latency::TaskPattern &pattern,
@@ -175,7 +228,38 @@ class Generator {
     void run() {
         constexpr auto SPIN_WINDOW = 20ms;
         std::optional<ActiveTask> active;
+        std::optional<PendingTask> pending;
         auto nextTick = std::chrono::steady_clock::now();
+
+        const auto startWhenReady = [&] {
+            if (!pending || active || !subscriptionsReady(*pending)) {
+                return;
+            }
+
+            try {
+                const auto initialEvents = makeInitialEvents(pending->pattern);
+
+                if (!initialEvents.empty()) {
+                    publisher_->publishEvents(initialEvents);
+                    std::cout << std::format("Published {} initial Profile events for {}\n", initialEvents.size(),
+                                             pending->command);
+                }
+
+                active.emplace(
+                    ActiveTask{pending->command, pending->pattern, makeEvents(pending->pattern, pending->command)});
+                nextTick = std::chrono::steady_clock::now();
+                std::cout << std::format("Subscriptions ready for {} symbols. Started {} ({} events/batch, "
+                                         "period={} ms, nominal={:.3f} events/s)\n",
+                                         pending->symbols.size(), pending->command, active->pattern.eventCount(),
+                                         active->pattern.publishPeriod.count(),
+                                         active->pattern.nominalEventsPerSecond())
+                          << std::flush;
+                pending.reset();
+            } catch (const std::exception &e) {
+                std::cerr << "Cannot start task: " << e.what() << '\n';
+                pending.reset();
+            }
+        };
 
         // Subscription callbacks only enqueue commands. Parsing and publishing remain serialized on this thread.
         for (;;) {
@@ -221,41 +305,51 @@ class Generator {
                 commands_.pop_front();
                 lock.unlock();
 
-                if (command.start) {
+                if (command.type == CommandType::START) {
                     const auto parsed = latency::parseTask(command.text);
 
                     if (!parsed) {
                         std::cerr << "Rejected task at " << parsed.error().position << ": " << parsed.error().message
                                   << " [" << command.text << "]\n";
-                    } else if (!active) {
-                        try {
-                            const auto initialEvents = makeInitialEvents(*parsed);
-
-                            if (!initialEvents.empty()) {
-                                publisher_->publishEvents(initialEvents);
-                                std::cout << std::format("Published {} initial Profile events for {}\n",
-                                                         initialEvents.size(), command.text);
-                            }
-
-                            active.emplace(ActiveTask{command.text, *parsed, makeEvents(*parsed, command.text)});
-                            nextTick = std::chrono::steady_clock::now();
-                            std::cout << "Started " << command.text << " (" << active->pattern.eventCount()
-                                      << " events/batch, period=" << active->pattern.publishPeriod.count()
-                                      << " ms, nominal=" << active->pattern.nominalEventsPerSecond() << " events/s)\n"
-                                      << std::flush;
-                        } catch (const std::exception &e) {
-                            std::cerr << "Cannot start task: " << e.what() << '\n';
-                        }
-                    } else if (active->command != command.text) {
+                    } else if (!active && !pending) {
+                        pending.emplace(PendingTask{command.text, *parsed, parsed->symbols()});
+                        std::cout << std::format("Waiting for subscriptions before starting {} ({} symbols)\n",
+                                                 command.text, pending->symbols.size())
+                                  << std::flush;
+                    } else if ((active && active->command != command.text) ||
+                               (pending && pending->command != command.text)) {
                         // The protocol intentionally supports one active load profile at a time.
-                        std::cerr << "Rejected concurrent task " << command.text << "; active task is "
-                                  << active->command << '\n';
+                        const auto &current = active ? active->command : pending->command;
+
+                        std::cerr << "Rejected concurrent task " << command.text << "; current task is " << current
+                                  << '\n';
                     }
-                } else if (active && (command.text.empty() || active->command == command.text)) {
-                    logSummary(*active);
-                    std::cout << "Stopped " << active->command << '\n';
-                    active.reset();
+                } else if (command.type == CommandType::STOP) {
+                    if (pending && (command.text.empty() || pending->command == command.text)) {
+                        std::cout << "Cancelled pending task " << pending->command << '\n';
+                        pending.reset();
+                    }
+
+                    if (active && (command.text.empty() || active->command == command.text)) {
+                        logSummary(*active);
+                        std::cout << "Stopped " << active->command << '\n';
+                        active.reset();
+                    }
+                } else {
+                    auto &subscribed = subscribedSymbols_[subscriptionKindIndex(command.subscription)];
+
+                    if (command.type == CommandType::SYMBOLS_ADDED) {
+                        subscribed.insert(command.symbols.begin(), command.symbols.end());
+                    } else if (command.type == CommandType::SYMBOLS_REMOVED) {
+                        for (const auto &symbol : command.symbols) {
+                            subscribed.erase(symbol);
+                        }
+                    } else if (command.type == CommandType::SUBSCRIPTION_CLOSED) {
+                        subscribed.clear();
+                    }
                 }
+
+                startWhenReady();
 
                 continue;
             }
@@ -298,11 +392,42 @@ class Generator {
         }
     }
 
-    void enqueue(bool start, std::string text = {}) {
+    void enqueueControl(CommandType type, std::string text = {}) {
         {
             std::lock_guard lock{mutex_};
 
-            commands_.push_back(Command{start, std::move(text)});
+            commands_.push_back(Command{type, std::move(text)});
+        }
+
+        cv_.notify_one();
+    }
+
+    void enqueueSymbols(CommandType type, SubscriptionKind subscription,
+                        const std::unordered_set<SymbolWrapper> &symbols) {
+        std::vector<std::string> strings;
+
+        strings.reserve(symbols.size());
+
+        for (const auto &symbol : symbols) {
+            if (symbol.isStringSymbol()) {
+                strings.push_back(symbol.asStringSymbol());
+            }
+        }
+
+        {
+            std::lock_guard lock{mutex_};
+
+            commands_.push_back(Command{type, {}, subscription, std::move(strings)});
+        }
+
+        cv_.notify_one();
+    }
+
+    void enqueueSubscriptionClosed(SubscriptionKind subscription) {
+        {
+            std::lock_guard lock{mutex_};
+
+            commands_.push_back(Command{CommandType::SUBSCRIPTION_CLOSED, {}, subscription});
         }
 
         cv_.notify_one();
@@ -373,28 +498,58 @@ int main(int argc, char **argv) {
             DXEndpoint::newBuilder()->withRole(DXEndpoint::Role::PUBLISHER)->withName("latency-server")->build();
         const auto publisher = endpoint->getPublisher();
         Generator generator{publisher};
-        const auto observable = publisher->getSubscription(TextMessage::TYPE);
+
+        struct ObservedSubscription {
+            std::shared_ptr<ObservableSubscription> subscription;
+            std::size_t listenerId{};
+        };
+
+        std::vector<ObservedSubscription> observedSubscriptions;
+        const auto observe = [&generator, &publisher, &observedSubscriptions](SubscriptionKind kind,
+                                                                              const EventTypeEnum &eventType) {
+            const auto subscription = publisher->getSubscription(eventType);
+            const auto listener = ObservableSubscriptionChangeListener::create(
+                [&generator, kind](const auto &symbols) {
+                    generator.enqueueSymbols(CommandType::SYMBOLS_ADDED, kind, symbols);
+                },
+                [&generator, kind](const auto &symbols) {
+                    generator.enqueueSymbols(CommandType::SYMBOLS_REMOVED, kind, symbols);
+                },
+                [&generator, kind] {
+                    generator.enqueueSubscriptionClosed(kind);
+                });
+
+            observedSubscriptions.push_back({subscription, subscription->addChangeListener(listener)});
+        };
+
+        observe(SubscriptionKind::QUOTE, Quote::TYPE);
+        observe(SubscriptionKind::TRADE, Trade::TYPE);
+        observe(SubscriptionKind::TRADE_ETH, TradeETH::TYPE);
+        observe(SubscriptionKind::SUMMARY, Summary::TYPE);
+        observe(SubscriptionKind::PROFILE, Profile::TYPE);
+
+        const auto controlSubscription = publisher->getSubscription(TextMessage::TYPE);
 
         // A client starts and stops its task by adding and removing the task string as a TextMessage symbol.
-        const auto listener = ObservableSubscriptionChangeListener::create(
+        const auto controlListener = ObservableSubscriptionChangeListener::create(
             [&generator](const auto &symbols) {
                 for (const auto &symbol : symbols) {
                     if (symbol.isStringSymbol()) {
-                        generator.enqueue(true, symbol.asStringSymbol());
+                        generator.enqueueControl(CommandType::START, symbol.asStringSymbol());
                     }
                 }
             },
             [&generator](const auto &symbols) {
                 for (const auto &symbol : symbols) {
                     if (symbol.isStringSymbol()) {
-                        generator.enqueue(false, symbol.asStringSymbol());
+                        generator.enqueueControl(CommandType::STOP, symbol.asStringSymbol());
                     }
                 }
             },
             [&generator] {
-                generator.enqueue(false);
+                generator.enqueueControl(CommandType::STOP);
             });
-        const auto listenerId = observable->addChangeListener(listener);
+        const auto controlListenerId = controlSubscription->addChangeListener(controlListener);
 
         endpoint->connect(config.address);
         std::cout << std::format("Latency server listening on {}. Press Ctrl+C to stop.\n", config.address)
@@ -404,7 +559,12 @@ int main(int argc, char **argv) {
             std::this_thread::sleep_for(200ms);
         }
 
-        observable->removeChangeListener(listenerId);
+        controlSubscription->removeChangeListener(controlListenerId);
+
+        for (const auto &observed : observedSubscriptions) {
+            observed.subscription->removeChangeListener(observed.listenerId);
+        }
+
         endpoint->closeAndAwaitTermination();
 
         return 0;

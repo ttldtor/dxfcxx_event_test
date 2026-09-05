@@ -57,9 +57,11 @@ Tests use the header-only doctest framework, fetched at its pinned release by CM
 ## Executables
 
 `latency_server` is a QD publisher. It listens on `--address` (default `:7400`) and waits for a client to subscribe to
-a task string. It supports one active task at a time, creates stable synthetic event objects for that task, and
-publishes combined event/marker batches at the task's configured cadence until the subscription is removed. The
-marker timestamp is captured immediately before `publishEvents()`; server logs separately report preparation time,
+a task string. It supports one active task at a time and waits until the publisher observes the complete requested
+symbol set for every market event type before publishing the initial Profiles and starting the recurring load. It
+creates stable synthetic event objects for that task and publishes combined event/marker batches at the configured
+cadence until the subscription is removed. The marker timestamp is captured immediately before `publishEvents()`;
+server logs separately report preparation time,
 publisher call time, achieved rate, and missed publication deadlines. `--monitoring-stat` controls the QD statistics
 period and accepts `0` to disable it. For portable sub-20-ms scheduling, the generator yields during the final 20 ms
 before a deadline; high-frequency profiles can therefore consume one CPU core on the publisher.
@@ -75,6 +77,7 @@ interval. Its main options are:
 | `--duration` | `5m` | Reported measurement period. |
 | `--window` | `10s` | Size of each summary row's time window. |
 | `--batch-timeout` | `30s` | Maximum wait for an incomplete marker/event batch. |
+| `--startup-timeout` | `30s` | Maximum wait for all unique initial Profile symbols before warm-up. |
 | `--monitoring-stat` | `10s` | QD statistics period; `0` disables it. |
 | `--role` | `stream-feed` | Endpoint role: `stream-feed` preserves updates; `feed` permits conflation. |
 | `--output` | `latency` | Path and filename prefix for generated CSV files. |
@@ -86,8 +89,10 @@ to the nominal event rate. The default period is `1s`.
 For example, `SUB:Q375;T375;E375;S375@10ms` publishes 1,500 recurring events every 10 ms (150,000 events/s).
 The common instrument universe contains 375 symbols named `SYM000` through `SYM374`; the numeric width is derived
 once from the largest configured quantity. A type with a smaller quantity uses a prefix of the same universe. The
-client automatically includes `Profile` in its single combined market-event subscription, and the test server
-publishes one initial Profile for every symbol in the common universe.
+client automatically includes `Profile` in its single combined market-event subscription. The test server waits for
+that subscription and every requested recurring event subscription to contain the complete common universe, then
+publishes one initial Profile for every symbol. The client starts its warm-up only after all unique Profile symbols
+have arrived, so subscription propagation is excluded from the configured warm-up duration.
 
 `latency_analyzer` is a standalone post-processing utility and does not connect to dxFeed. It reads a directory of
 latency summaries and captured QD logs, then writes `monitoring.csv` and `monitoring-summary.csv`. Pass
@@ -151,7 +156,8 @@ bash ./tools/run-benchmark.sh --binary-directory ./build
 ```
 
 Use `-DryRun` or `--dry-run` to validate the suite and display all planned commands without starting a benchmark.
-Both launchers read `tools/benchmark-suite.conf`; pass `-Config` or `--config` to use a modified suite. Results are
+Both launchers read `tools/benchmark-suite.conf`, including the independent `STARTUP_TIMEOUT`; pass `-Config` or
+`--config` to use a modified suite. Results are
 written below `benchmark-results/<UTC timestamp>/`. A full default run takes approximately two hours and twenty
 minutes plus any machine-dependent startup overhead.
 

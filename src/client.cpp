@@ -7,6 +7,7 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <csignal>
 #include <filesystem>
 #include <format>
@@ -21,6 +22,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -73,7 +75,7 @@ void onSignal(int) {
 struct Config {
     std::string address{"127.0.0.1:7400"};
     std::string task{"SUB:Q100"};
-    std::chrono::milliseconds warmup{30s}, duration{5min}, window{10s}, batchTimeout{30s};
+    std::chrono::milliseconds warmup{30s}, duration{5min}, window{10s}, batchTimeout{30s}, startupTimeout{30s};
     std::optional<std::chrono::milliseconds> monitoringStat{10s};
     std::filesystem::path output{"latency"};
     ClientRole role{ClientRole::STREAM_FEED};
@@ -95,6 +97,7 @@ Config parseArgs(int argc, char **argv) {
   --task SUB:Q100;S1;T5@100ms    default SUB:Q100@1s
   --warmup 30s             --duration 5m
   --window 10s             --batch-timeout 30s
+  --startup-timeout 30s    initial Profile delivery timeout
   --monitoring-stat 10s    0 disables QD statistics
   --role stream-feed|feed  default stream-feed
   --output PREFIX          default latency
@@ -145,6 +148,8 @@ Config parseArgs(int argc, char **argv) {
                 config.window = *duration;
             } else if (arg == "--batch-timeout") {
                 config.batchTimeout = *duration;
+            } else if (arg == "--startup-timeout") {
+                config.startupTimeout = *duration;
             } else {
                 throw std::invalid_argument(std::format("unknown argument: {}", arg));
             }
@@ -192,6 +197,7 @@ class Collector {
     const std::chrono::milliseconds batchTimeout_;
     const bool allowConflation_;
     mutable std::mutex mutex_;
+    std::condition_variable profilesCv_;
     bool measuring_{};
     bool acceptingNewBatches_{};
     std::optional<std::int32_t> startBoundarySequence_;
@@ -201,7 +207,7 @@ class Collector {
     std::map<std::int32_t, PendingBatch> pending_;
     std::size_t callbacksWindow_{}, callbacksTotal_{}, negativeWindow_{}, negativeTotal_{};
     std::size_t missingWindow_{}, missingTotal_{};
-    std::size_t profilesReceived_{};
+    std::unordered_set<std::string> profileSymbolsReceived_;
     std::size_t activity_{};
     DeliveryCounters deliveryWindow_, deliveryTotal_;
 
@@ -457,11 +463,16 @@ class Collector {
     void handle(const std::vector<std::shared_ptr<EventType>> &events) {
         const auto observed = latency::unixNanosNow();
         std::lock_guard lock{mutex_};
+        bool profilesChanged = false;
 
         for (const auto &event : events) {
-            if (event->sharedAs<Profile>()) {
-                ++profilesReceived_;
+            if (const auto profile = event->sharedAs<Profile>()) {
+                profilesChanged |= profileSymbolsReceived_.insert(profile->getEventSymbol()).second;
             }
+        }
+
+        if (profilesChanged) {
+            profilesCv_.notify_all();
         }
 
         if (!measuring_) {
@@ -566,8 +577,37 @@ class Collector {
     Totals totals() const {
         std::lock_guard lock{mutex_};
 
-        return Totals{eventGlobalByKind_, batchGlobal_,    callbacksTotal_,   negativeTotal_,
-                      missingTotal_,      pending_.size(), profilesReceived_, deliveryTotal_};
+        return Totals{eventGlobalByKind_,
+                      batchGlobal_,
+                      callbacksTotal_,
+                      negativeTotal_,
+                      missingTotal_,
+                      pending_.size(),
+                      profileSymbolsReceived_.size(),
+                      deliveryTotal_};
+    }
+
+    bool waitForProfiles(std::size_t expected, std::chrono::milliseconds timeout) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        std::unique_lock lock{mutex_};
+
+        while (!interrupted.load() && profileSymbolsReceived_.size() < expected) {
+            const auto wakeAt = std::min(deadline, std::chrono::steady_clock::now() + 100ms);
+
+            profilesCv_.wait_until(lock, wakeAt);
+
+            if (std::chrono::steady_clock::now() >= deadline) {
+                break;
+            }
+        }
+
+        return profileSymbolsReceived_.size() >= expected;
+    }
+
+    std::size_t profileCount() const {
+        std::lock_guard lock{mutex_};
+
+        return profileSymbolsReceived_.size();
     }
 
     std::size_t pendingCount() const {
@@ -889,10 +929,32 @@ int main(int argc, char **argv) {
         });
         control->addSymbols(config.task);
         endpoint->connect(config.address);
-        std::cout << "Connected to " << config.address << " using " << roleName(config.role) << ", task " << config.task
-                  << ", expected " << expected << " events/batch every " << pattern->publishPeriod.count()
-                  << " ms (nominal " << pattern->nominalEventsPerSecond() << " events/s). Warm-up "
-                  << config.warmup.count() << " ms.\n";
+        std::cout << std::format("Connected to {} using {}, task {}, expected {} events/batch every {} ms "
+                                 "(nominal {:.3f} events/s). Waiting for {} initial Profile events.\n",
+                                 config.address, roleName(config.role), config.task, expected,
+                                 pattern->publishPeriod.count(), pattern->nominalEventsPerSecond(),
+                                 pattern->symbolCount())
+                  << std::flush;
+
+        if (!collector.waitForProfiles(pattern->symbolCount(), config.startupTimeout)) {
+            const auto received = collector.profileCount();
+
+            control->removeSymbols(config.task);
+            endpoint->closeAndAwaitTermination();
+
+            if (interrupted.load()) {
+                return 130;
+            }
+
+            std::cerr << std::format("Initial Profile timeout: received {}/{} unique symbols within {} ms\n", received,
+                                     pattern->symbolCount(), config.startupTimeout.count());
+
+            return 1;
+        }
+
+        std::cout << std::format("Initial Profile setup complete: {}/{}. Warm-up {} ms.\n", collector.profileCount(),
+                                 pattern->symbolCount(), config.warmup.count())
+                  << std::flush;
 
         if (!waitFor(config.warmup)) {
             control->removeSymbols(config.task);

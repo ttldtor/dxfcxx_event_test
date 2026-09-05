@@ -23,6 +23,7 @@ warmup=""
 duration=""
 window=""
 batch_timeout=""
+startup_timeout=""
 monitoring_period=""
 client_role=""
 cooldown_seconds=""
@@ -47,6 +48,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
             DURATION) duration=$value ;;
             WINDOW) window=$value ;;
             BATCH_TIMEOUT) batch_timeout=$value ;;
+            STARTUP_TIMEOUT) startup_timeout=$value ;;
             MONITORING_PERIOD) monitoring_period=$value ;;
             CLIENT_ROLE) client_role=$value ;;
             COOLDOWN_SECONDS) cooldown_seconds=$value ;;
@@ -62,6 +64,7 @@ done < "$config"
 [[ -n "$duration" ]] || { echo "Missing DURATION in $config" >&2; exit 2; }
 [[ -n "$window" ]] || { echo "Missing WINDOW in $config" >&2; exit 2; }
 [[ -n "$batch_timeout" ]] || { echo "Missing BATCH_TIMEOUT in $config" >&2; exit 2; }
+[[ -n "$startup_timeout" ]] || { echo "Missing STARTUP_TIMEOUT in $config" >&2; exit 2; }
 [[ -n "$monitoring_period" ]] || { echo "Missing MONITORING_PERIOD in $config" >&2; exit 2; }
 [[ -n "$client_role" ]] || { echo "Missing CLIENT_ROLE in $config" >&2; exit 2; }
 [[ -n "$cooldown_seconds" ]] || { echo "Missing COOLDOWN_SECONDS in $config" >&2; exit 2; }
@@ -82,8 +85,9 @@ if $dry_run; then
     for ((repetition=1; repetition<=repetitions; ++repetition)); do
         for ((position=0; position<${#profile_names[@]}; ++position)); do
             index=$(((position + repetition - 1) % ${#profile_names[@]}))
-            printf '%s-r%02d : %s ; role=%s warmup=%s duration=%s\n' "${profile_names[$index]}" "$repetition" \
-                "${profile_tasks[$index]}" "$client_role" "$warmup" "$duration"
+            printf '%s-r%02d : %s ; role=%s startup-timeout=%s warmup=%s duration=%s\n' \
+                "${profile_names[$index]}" "$repetition" "${profile_tasks[$index]}" "$client_role" \
+                "$startup_timeout" "$warmup" "$duration"
         done
     done
     printf 'Analyzer: %s --monitoring-period %s\n' "$analyzer_binary" "$monitoring_period"
@@ -146,6 +150,7 @@ for ((repetition=1; repetition<=repetitions; ++repetition)); do
                 --role "$client_role" \
                 --warmup "$warmup" --duration "$duration" \
                 --window "$window" --batch-timeout "$batch_timeout" \
+                --startup-timeout "$startup_timeout" \
                 --monitoring-stat "$monitoring_period" --output "$output_prefix" \
                 > "$client_log" 2>&1
             client_exit=$?

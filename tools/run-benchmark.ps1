@@ -27,7 +27,8 @@ function Read-SuiteConfig([string]$Path) {
     }
 
     foreach ($required in "REPETITIONS", "WARMUP", "DURATION", "WINDOW", "BATCH_TIMEOUT",
-             "MONITORING_PERIOD", "CLIENT_ROLE", "COOLDOWN_SECONDS", "ADDRESS", "LISTEN_ADDRESS") {
+             "STARTUP_TIMEOUT", "MONITORING_PERIOD", "CLIENT_ROLE", "COOLDOWN_SECONDS", "ADDRESS",
+             "LISTEN_ADDRESS") {
         if (-not $settings.ContainsKey($required)) { throw "Missing $required in $Path" }
     }
     if ($profiles.Count -eq 0) { throw "No PROFILE entries in $Path" }
@@ -54,7 +55,7 @@ if ($DryRun) {
         for ($position = 0; $position -lt $suite.Profiles.Count; ++$position) {
             $profile = $suite.Profiles[($position + $repetition - 1) % $suite.Profiles.Count]
             $prefix = "{0}-r{1:d2}" -f $profile.Name, $repetition
-            Write-Output "$prefix : $($profile.Task) ; role=$($settings.CLIENT_ROLE) warmup=$($settings.WARMUP) duration=$($settings.DURATION)"
+            Write-Output "$prefix : $($profile.Task) ; role=$($settings.CLIENT_ROLE) startup-timeout=$($settings.STARTUP_TIMEOUT) warmup=$($settings.WARMUP) duration=$($settings.DURATION)"
         }
     }
     Write-Output "Analyzer: $analyzerBinary --monitoring-period $($settings.MONITORING_PERIOD)"
@@ -114,7 +115,8 @@ for ($repetition = 1; $repetition -le $repetitions; ++$repetition) {
             & $clientBinary --address $settings.ADDRESS --task $profile.Task `
                 --role $settings.CLIENT_ROLE `
                 --warmup $settings.WARMUP --duration $settings.DURATION --window $settings.WINDOW `
-                --batch-timeout $settings.BATCH_TIMEOUT --monitoring-stat $settings.MONITORING_PERIOD `
+                --batch-timeout $settings.BATCH_TIMEOUT --startup-timeout $settings.STARTUP_TIMEOUT `
+                --monitoring-stat $settings.MONITORING_PERIOD `
                 --output $outputPrefix *> $clientLog
             $clientExit = $LASTEXITCODE
             if ($clientExit -ne 0) { throw "Client exited with code $clientExit" }

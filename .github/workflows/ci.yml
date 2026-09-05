@@ -161,9 +161,9 @@ jobs:
           docker run --rm --network latency-test \
             --mount "type=bind,source=$RUNNER_TEMP/latency-output,target=/work" \
             latency-test:ci latency_client --address latency-server:7400 \
-              --task "SUB:Q10;T10;E10;S10" --role feed \
+              --task "SUB:Q5000;T1;E1;S1" --role feed \
               --warmup 2s --duration 3s --window 1s \
-              --batch-timeout 2s --monitoring-stat 1s --output smoke \
+              --batch-timeout 2s --startup-timeout 30s --monitoring-stat 1s --output smoke \
             2>&1 | tee "$RUNNER_TEMP/latency-output/smoke-client.log"
           docker logs latency-server > "$RUNNER_TEMP/latency-output/smoke-server.log" 2>&1
           echo "::group::Latency server log"
@@ -184,7 +184,7 @@ jobs:
             monitoring-summary.csv; do
             test -s "$RUNNER_TEMP/latency-output/$result"
           done
-          grep --fixed-strings --quiet "Initial Profile events received=10/10" \
+          grep --fixed-strings --quiet "Initial Profile events received=5000/5000" \
             "$RUNNER_TEMP/latency-output/smoke-client.log"
       - name: Publish end-to-end results
         if: always()
@@ -232,7 +232,7 @@ jobs:
             echo '## Linux container end-to-end'
             echo
             echo "- Status: **$TEST_STATUS**"
-            echo '- Task: `SUB:Q10;T10;E10;S10`; role: `feed`'
+            echo '- Task: `SUB:Q5000;T1;E1;S1`; role: `feed`'
             echo '- Warm-up: `2s`; measurement: `3s`; window: `1s`'
             echo
           } >> "$GITHUB_STEP_SUMMARY"
