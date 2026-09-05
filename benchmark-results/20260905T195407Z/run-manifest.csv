@@ -1,0 +1,13 @@
+profile,repetition,task,status,client_exit_code
+"order-summary-last",1,"SUB:Q375;T375;E375;S375@10ms#375",passed,0
+"order-quote-last",1,"SUB:T375;E375;S375;Q375@10ms#375",passed,0
+"order-trade-last",1,"SUB:E375;S375;Q375;T375@10ms#375",passed,0
+"order-trade-eth-last",1,"SUB:S375;Q375;T375;E375@10ms#375",passed,0
+"order-quote-last",2,"SUB:T375;E375;S375;Q375@10ms#375",passed,0
+"order-trade-last",2,"SUB:E375;S375;Q375;T375@10ms#375",passed,0
+"order-trade-eth-last",2,"SUB:S375;Q375;T375;E375@10ms#375",passed,0
+"order-summary-last",2,"SUB:Q375;T375;E375;S375@10ms#375",passed,0
+"order-trade-last",3,"SUB:E375;S375;Q375;T375@10ms#375",passed,0
+"order-trade-eth-last",3,"SUB:S375;Q375;T375;E375@10ms#375",passed,0
+"order-summary-last",3,"SUB:Q375;T375;E375;S375@10ms#375",passed,0
+"order-quote-last",3,"SUB:T375;E375;S375;Q375@10ms#375",passed,0

@@ -62,3 +62,15 @@ This experiment is complete: [`Symbol-cardinality benchmark`](20260905T192009Z/C
 same 150,000 events/s workload, listener coverage is 99.855% for 375 symbols and exactly 100% for both 3,750 and
 10,000 symbols. Spreading updates over more record keys removes the deficit while modestly increasing latency and
 QD storage state. The next controlled variable is event-type order.
+
+The event-order experiment is also complete: [`Event-type order benchmark`](20260905T195407Z/EVENT-ORDER-ANALYSIS.md).
+In all four permutations, the event type placed last has the largest median listener deficit. The previously larger
+Summary deficit is therefore mainly a position effect rather than a Summary-specific limitation. A deterministic
+per-publication shuffle of the four type blocks confirms this result:
+[`Shuffled event-type order benchmark`](20260905T202837Z/SHUFFLED-ORDER-ANALYSIS.md). The shuffle distributes the
+deficit much more evenly between types and has no measurable generator cost, but it does not reduce the total
+deficit. This is a diagnostic control, not a proposed product workaround.
+
+The black-box controls now consistently point to per-record-key `FEED` supersession and a position-dependent window
+between record processing and C++ listener observation. The next useful step is targeted instrumentation or source
+tracing at the QD-to-listener boundary rather than further workload randomization.

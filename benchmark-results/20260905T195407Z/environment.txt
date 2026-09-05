@@ -1,0 +1,9 @@
+started_utc=2026-09-05T19:54:07.1049913Z
+git_commit=a60c08a01cec46ef3a27d6c50cb39c46045f24b8
+os=Microsoft Windows 10.0.26340
+architecture=X64
+processor_count=32
+binary_directory=C:\w\!active\dxfcxx_event_test\cmake-build-agent\Release
+suite_config=C:\w\!active\dxfcxx_event_test\tools\event-order.conf
+client_role=feed
+listener_delay=0

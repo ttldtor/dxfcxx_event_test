@@ -42,6 +42,8 @@ struct TaskPattern {
     std::chrono::milliseconds publishPeriod{std::chrono::seconds{1}};
     /** Explicit subscribed symbol-universe size, or empty when the largest event quantity defines it. */
     std::optional<std::size_t> subscribedSymbolCount;
+    /** Seed for deterministic per-publication event-type block shuffling, or empty for source order. */
+    std::optional<std::uint64_t> shuffleSeed;
 
     /**
      * Returns the total number of recurring events generated in each batch.
@@ -98,10 +100,11 @@ struct ParseError {
 };
 
 /**
- * Parses a subscription task in the `SUB:<type><quantity>[;...][@<period>][#<symbols>]` DSL.
+ * Parses a subscription task in the `SUB:<type><quantity>[;...][@<period>][#<symbols>][~<seed>]` DSL.
  *
  * Supported type codes are `Q`, `T`, `E`, and `S`. Each type may occur at most once and its quantity must be positive.
  * An optional symbol count expands the subscribed universe without changing the events published per batch.
+ * An optional shuffle seed deterministically changes the order of event-type blocks for each publication.
  *
  * @param text The task text, for example `SUB:Q100;S1;T5@100ms`.
  * @return The parsed pattern, or a positional parse error.

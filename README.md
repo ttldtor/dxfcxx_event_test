@@ -83,11 +83,12 @@ interval. Its main options are:
 | `--role` | `stream-feed` | Endpoint role: `stream-feed` preserves updates; `feed` permits conflation. |
 | `--output` | `latency` | Path and filename prefix for generated CSV files. |
 
-The task DSL is `SUB:<type><quantity>[;...][@<period>][#<symbols>]`: `Q`, `T`, `E`, and `S` mean Quote, Trade,
-TradeETH, and Summary. Each type may occur once and quantities must be positive. All configured types are recurring
-and contribute to the nominal event rate. The default period is `1s`. The optional final symbol count expands the
-subscribed instrument universe without changing the number of events published in each batch. It cannot be smaller
-than any configured event quantity.
+The task DSL is `SUB:<type><quantity>[;...][@<period>][#<symbols>][~<shuffle-seed>]`: `Q`, `T`, `E`, and `S` mean
+Quote, Trade, TradeETH, and Summary. Each type may occur once and quantities must be positive. All configured types
+are recurring and contribute to the nominal event rate. The default period is `1s`. The optional final symbol count
+expands the subscribed instrument universe without changing the number of events published in each batch. It cannot
+be smaller than any configured event quantity. A final shuffle seed enables reproducible per-publication shuffling
+of the configured event-type blocks; events inside each block retain their order.
 
 For example, `SUB:Q375;T375;E375;S375@10ms` publishes 1,500 recurring events every 10 ms (150,000 events/s).
 The common instrument universe contains 375 symbols named `SYM000` through `SYM374`; the numeric width is derived
@@ -209,6 +210,34 @@ workload at 150,000 events/s:
 ```sh
 bash ./tools/run-benchmark.sh --binary-directory ./build \
     --config ./tools/symbol-cardinality.conf
+```
+
+`tools/event-order.conf` keeps the 375-symbol, 150,000-events/s workload fixed and places a different event type at
+the end of each publication. The server preserves the event-type order written in the task DSL. This isolates an
+event-class effect from a serialization-position effect:
+
+```powershell
+.\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release `
+    -Config .\tools\event-order.conf
+```
+
+```sh
+bash ./tools/run-benchmark.sh --binary-directory ./build \
+    --config ./tools/event-order.conf
+```
+
+After the fixed-order comparison, `tools/event-order-shuffle.conf` uses seed `22805` to reshuffle the four event-type
+blocks for every publication. The operation shuffles four indices, not all 1,500 events, so its cost is negligible
+and included in the reported server preparation time:
+
+```powershell
+.\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release `
+    -Config .\tools\event-order-shuffle.conf
+```
+
+```sh
+bash ./tools/run-benchmark.sh --binary-directory ./build \
+    --config ./tools/event-order-shuffle.conf
 ```
 
 Each output prefix includes its repetition, for example `150k-100ms-r02`. The analyzer additionally writes

@@ -84,6 +84,11 @@ std::string TaskPattern::toString() const {
         result += std::to_string(*subscribedSymbolCount);
     }
 
+    if (shuffleSeed) {
+        result.push_back('~');
+        result += std::to_string(*shuffleSeed);
+    }
+
     return result;
 }
 
@@ -158,14 +163,28 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
 
     const auto periodSeparator = text.find('@', PREFIX.size());
     const auto symbolSeparator = text.find('#', PREFIX.size());
+    const auto shuffleSeparator = text.find('~', PREFIX.size());
 
     if (periodSeparator != std::string_view::npos && symbolSeparator != std::string_view::npos &&
         symbolSeparator < periodSeparator) {
         return std::unexpected(ParseError{symbolSeparator, "symbol count must follow publish period"});
     }
 
-    const auto patternEnd = std::min(periodSeparator == std::string_view::npos ? text.size() : periodSeparator,
-                                     symbolSeparator == std::string_view::npos ? text.size() : symbolSeparator);
+    if (periodSeparator != std::string_view::npos && shuffleSeparator != std::string_view::npos &&
+        shuffleSeparator < periodSeparator) {
+        return std::unexpected(ParseError{shuffleSeparator, "shuffle seed must follow publish period"});
+    }
+
+    if (symbolSeparator != std::string_view::npos && shuffleSeparator != std::string_view::npos &&
+        shuffleSeparator < symbolSeparator) {
+        return std::unexpected(ParseError{shuffleSeparator, "shuffle seed must follow symbol count"});
+    }
+
+    const auto separatorPosition = [&](std::size_t separator) {
+        return separator == std::string_view::npos ? text.size() : separator;
+    };
+    const auto patternEnd = std::min(
+        {separatorPosition(periodSeparator), separatorPosition(symbolSeparator), separatorPosition(shuffleSeparator)});
     std::size_t pos = PREFIX.size();
 
     if (pos == patternEnd) {
@@ -230,7 +249,7 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
     }
 
     if (periodSeparator != std::string_view::npos) {
-        const auto periodEnd = symbolSeparator == std::string_view::npos ? text.size() : symbolSeparator;
+        const auto periodEnd = std::min(separatorPosition(symbolSeparator), separatorPosition(shuffleSeparator));
         const auto periodText = text.substr(periodSeparator + 1, periodEnd - periodSeparator - 1);
 
         if (periodText.empty()) {
@@ -251,7 +270,8 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
     }
 
     if (symbolSeparator != std::string_view::npos) {
-        const auto symbolText = text.substr(symbolSeparator + 1);
+        const auto symbolEnd = separatorPosition(shuffleSeparator);
+        const auto symbolText = text.substr(symbolSeparator + 1, symbolEnd - symbolSeparator - 1);
 
         if (symbolText.empty()) {
             return std::unexpected(ParseError{symbolSeparator + 1, "expected symbol count"});
@@ -276,6 +296,27 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
         }
 
         task.subscribedSymbolCount = count;
+    }
+
+    if (shuffleSeparator != std::string_view::npos) {
+        const auto seedText = text.substr(shuffleSeparator + 1);
+
+        if (seedText.empty()) {
+            return std::unexpected(ParseError{shuffleSeparator + 1, "expected shuffle seed"});
+        }
+
+        if (seedText.find('~') != std::string_view::npos) {
+            return std::unexpected(ParseError{shuffleSeparator + 1 + seedText.find('~'), "duplicate shuffle seed"});
+        }
+
+        std::uint64_t seed{};
+        const auto [ptr, ec] = std::from_chars(seedText.data(), seedText.data() + seedText.size(), seed);
+
+        if (ec != std::errc{} || ptr != seedText.data() + seedText.size()) {
+            return std::unexpected(ParseError{shuffleSeparator + 1, "invalid shuffle seed"});
+        }
+
+        task.shuffleSeed = seed;
     }
 
     return task;

@@ -13,6 +13,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <ranges>
 #include <stdexcept>
@@ -85,6 +86,8 @@ class Generator {
         std::vector<EventPool> pools;
         std::shared_ptr<TextMessage> marker;
         std::vector<std::shared_ptr<EventType>> publication;
+        std::vector<std::size_t> poolOrder;
+        std::array<std::uint64_t, 4> lastBlockCounts{};
         std::uint32_t tick{};
         std::uint64_t publications{}, skippedDeadlines{};
         std::chrono::nanoseconds preparationTotal{}, preparationMaximum{};
@@ -184,15 +187,41 @@ class Generator {
         return events;
     }
 
+    static std::uint64_t nextRandom(std::uint64_t &state) {
+        state += 0x9e3779b97f4a7c15ULL;
+        auto value = state;
+
+        value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+        value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+
+        return value ^ (value >> 31U);
+    }
+
     void publish(ActiveTask &active) {
         const auto preparationStart = std::chrono::steady_clock::now();
         ++active.tick;
         const auto sequence = static_cast<std::int32_t>(active.tick % TextMessage::MAX_SEQUENCE);
 
         active.publication.clear();
+        std::iota(active.poolOrder.begin(), active.poolOrder.end(), 0);
+
+        if (active.pattern.shuffleSeed) {
+            auto randomState = *active.pattern.shuffleSeed ^ active.publications;
+
+            for (std::size_t i = active.poolOrder.size(); i > 1; --i) {
+                const auto selected = static_cast<std::size_t>(nextRandom(randomState) % i);
+
+                std::swap(active.poolOrder[i - 1], active.poolOrder[selected]);
+            }
+        }
+
+        const auto lastKind = active.pools[active.poolOrder.back()].kind;
+
+        ++active.lastBlockCounts[subscriptionKindIndex(subscriptionKind(lastKind))];
 
         // Event fields identify the batch. A larger symbol universe changes record-key cardinality, not batch size.
-        for (const auto &pool : active.pools) {
+        for (const auto poolIndex : active.poolOrder) {
+            const auto &pool = active.pools[poolIndex];
             const auto first = active.publications * pool.quantity % pool.events.size();
 
             for (std::size_t i = 0; i < pool.quantity; ++i) {
@@ -252,11 +281,14 @@ class Generator {
 
         std::cout << std::format("Generator summary {}: publications={} skipped-deadlines={} "
                                  "actual-batches/s={:.3f} actual-events/s={:.3f} "
-                                 "preparation-ms(avg/max)={:.3f}/{:.3f} publish-ms(avg/max)={:.3f}/{:.3f}\n",
+                                 "preparation-ms(avg/max)={:.3f}/{:.3f} publish-ms(avg/max)={:.3f}/{:.3f} "
+                                 "last-blocks(Q/T/E/S)={}/{}/{}/{}\n",
                                  active.command, active.publications, active.skippedDeadlines, actualBatchesPerSecond,
                                  actualEventsPerSecond, milliseconds(active.preparationTotal) / publications,
                                  milliseconds(active.preparationMaximum),
-                                 milliseconds(active.publishTotal) / publications, milliseconds(active.publishMaximum))
+                                 milliseconds(active.publishTotal) / publications, milliseconds(active.publishMaximum),
+                                 active.lastBlockCounts[0], active.lastBlockCounts[1], active.lastBlockCounts[2],
+                                 active.lastBlockCounts[3])
                   << std::flush;
     }
 
@@ -281,11 +313,14 @@ class Generator {
                 }
 
                 auto publication = std::vector<std::shared_ptr<EventType>>{};
+                auto pools = makeEventPools(pending->pattern);
+                auto poolOrder = std::vector<std::size_t>(pools.size());
 
                 publication.reserve(pending->pattern.eventCount() + 1);
-                active.emplace(ActiveTask{pending->command, pending->pattern, makeEventPools(pending->pattern),
+                std::iota(poolOrder.begin(), poolOrder.end(), 0);
+                active.emplace(ActiveTask{pending->command, pending->pattern, std::move(pools),
                                           std::make_shared<TextMessage>(pending->command, "LATENCY_BATCH"),
-                                          std::move(publication)});
+                                          std::move(publication), std::move(poolOrder)});
                 nextTick = std::chrono::steady_clock::now();
                 std::cout << std::format("Subscriptions ready for {} symbols. Started {} ({} events/batch, "
                                          "period={} ms, nominal={:.3f} events/s)\n",

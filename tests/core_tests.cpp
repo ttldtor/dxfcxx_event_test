@@ -94,6 +94,22 @@ TEST_CASE("task and duration parsing") {
     CHECK(expandedUniverse->symbols().back() == "SYM3749");
     CHECK(expandedUniverse->symbols(EventKind::QUOTE).size() == 375);
 
+    const auto reordered = parseTask("SUB:S375;E375;T375;Q375@10ms#375");
+
+    REQUIRE(reordered.has_value());
+    REQUIRE(reordered->items.size() == 4);
+    CHECK(reordered->items[0].kind == EventKind::SUMMARY);
+    CHECK(reordered->items[1].kind == EventKind::TRADE_ETH);
+    CHECK(reordered->items[2].kind == EventKind::TRADE);
+    CHECK(reordered->items[3].kind == EventKind::QUOTE);
+    CHECK(reordered->toString() == "SUB:S375;E375;T375;Q375@10ms#375");
+
+    const auto shuffled = parseTask("SUB:Q375;T375;E375;S375@10ms#375~22805");
+
+    REQUIRE(shuffled.has_value());
+    CHECK(shuffled->shuffleSeed == 22805);
+    CHECK(shuffled->toString() == "SUB:Q375;T375;E375;S375@10ms#375~22805");
+
     CHECK_FALSE(parseTask("SUB:").has_value());
     CHECK_FALSE(parseTask("SUB:Q0").has_value());
     CHECK_FALSE(parseTask("SUB:Q1;Q2").has_value());
@@ -109,6 +125,10 @@ TEST_CASE("task and duration parsing") {
     CHECK_FALSE(parseTask("SUB:Q10#9").has_value());
     CHECK_FALSE(parseTask("SUB:Q10#20#30").has_value());
     CHECK_FALSE(parseTask("SUB:Q10#20@10ms").has_value());
+    CHECK_FALSE(parseTask("SUB:Q10~").has_value());
+    CHECK_FALSE(parseTask("SUB:Q10~seed").has_value());
+    CHECK_FALSE(parseTask("SUB:Q10~1~2").has_value());
+    CHECK_FALSE(parseTask("SUB:Q10~1@10ms").has_value());
     CHECK_FALSE(parseTask("SUB:Q999999999999999999999999999999").has_value());
 
     CHECK(parseDuration("10s") == 10s);
