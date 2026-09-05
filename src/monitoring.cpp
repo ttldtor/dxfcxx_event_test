@@ -51,6 +51,8 @@ struct LatencyRunRow {
     double samples{};
     double expectedPerBatch{};
     std::string endpointRole{"stream-feed"};
+    std::string eventsBatchLimit{"unknown"};
+    double aggregationPeriodMs{};
     double published{};
     double delivered{};
     double listenerDeficit{};
@@ -499,6 +501,8 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
     const auto expectedIndex = indexOf("expected_per_batch");
     const auto nominalIndex = indexOf("nominal_events_per_second");
     const auto roleIndex = indexOf("endpoint_role");
+    const auto eventsBatchLimitIndex = indexOf("events_batch_limit");
+    const auto aggregationPeriodIndex = indexOf("aggregation_period_ms");
     const auto publishedIndex = indexOf("published");
     const auto deliveredIndex = indexOf("delivered");
     const auto listenerDeficitIndex = indexOf("listener_deficit").or_else([&] {
@@ -607,6 +611,10 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
             row.endpointRole = columns[*roleIndex];
         }
 
+        if (eventsBatchLimitIndex && columns.size() > *eventsBatchLimitIndex) {
+            row.eventsBatchLimit = columns[*eventsBatchLimitIndex];
+        }
+
         const auto optionalNumber = [&](std::optional<std::size_t> index, double fallback = 0.0) {
             if (!index || columns.size() <= *index) {
                 return fallback;
@@ -621,6 +629,7 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
         row.listenerDeficit = optionalNumber(listenerDeficitIndex);
         row.listenerCoverage =
             optionalNumber(listenerCoverageIndex, row.published ? row.delivered / row.published : 0.0);
+        row.aggregationPeriodMs = optionalNumber(aggregationPeriodIndex);
         row.excessEvents = optionalNumber(excessIndex);
         row.fullPublications = optionalNumber(fullIndex);
         row.partialPublications = optionalNumber(partialIndex);
@@ -890,7 +899,8 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
     }
 
     runs << "\"profile\",\"scenario\",\"repetition\",\"nominal_events_per_second\",\"sample_kind\","
-            "\"samples\",\"expected_per_batch\",\"endpoint_role\",\"published\",\"delivered\","
+            "\"samples\",\"expected_per_batch\",\"endpoint_role\",\"events_batch_limit\","
+            "\"aggregation_period_ms\",\"published\",\"delivered\","
             "\"listener_deficit\",\"listener_coverage\",\"excess_events\",\"full_publications\","
             "\"partial_publications\",\"empty_publications\",\"uncorrelated_events\",\"callbacks\","
             "\"clock_anomalies\",\"missing_batches\","
@@ -906,6 +916,8 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
         writeColumn(runs, row.samples);
         writeColumn(runs, row.expectedPerBatch);
         writeColumn(runs, row.endpointRole);
+        writeColumn(runs, row.eventsBatchLimit);
+        writeColumn(runs, row.aggregationPeriodMs);
         writeColumn(runs, row.published);
         writeColumn(runs, row.delivered);
         writeColumn(runs, row.listenerDeficit);
@@ -1019,8 +1031,8 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
 
 Run-level values are aggregated using the median; the range shows the minimum and maximum across independent repetitions. Latencies are in milliseconds.
 
-| Scenario | Role | Runs | Listener coverage median | Listener deficit median | Event p50 median | Event p99 median (range) | Event p99.9 median | Batch p99 median | Integrity |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| Scenario | Role | Batch limit | Aggregation | Runs | Listener coverage median | Listener deficit median | Event p50 median | Event p99 median (range) | Event p99.9 median | Batch p99 median | Integrity |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
 )";
 
     std::map<std::string, std::vector<const LatencyRunRow *>> scenarios;
@@ -1062,12 +1074,15 @@ Run-level values are aggregated using the median; the range shows the minimum an
             return row->sampleKind == "event-total";
         });
         const auto role = eventRow == rows.end() ? "unknown" : (*eventRow)->endpointRole;
+        const auto eventsBatchLimit = eventRow == rows.end() ? "unknown" : (*eventRow)->eventsBatchLimit;
+        const auto aggregationPeriodMs = eventRow == rows.end() ? 0.0 : (*eventRow)->aggregationPeriodMs;
         const auto integrity = std::ranges::all_of(rows, [](const auto *row) {
             return row->integrityOk;
         });
         const auto missing = rows.empty() ? 0.0 : rows.front()->missingBatches;
         const auto integrityText = integrity ? "OK" : missing > 0 ? "CHECK; missing batches reported" : "CHECK";
-        report << "| " << scenario << " | " << role << " | " << p50.runs << " | " << std::fixed << std::setprecision(3)
+        report << "| " << scenario << " | " << role << " | " << eventsBatchLimit << " | " << std::fixed
+               << std::setprecision(3) << aggregationPeriodMs << " ms | " << p50.runs << " | "
                << listenerCoverage.median * 100.0 << "% | " << listenerDeficit.median << " | " << p50.median << " | "
                << p99.median << " (" << p99.minimum << "–" << p99.maximum << ") | " << p999.median << " | "
                << batchP99.median << " | " << integrityText << " |\n";

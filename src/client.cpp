@@ -91,6 +91,7 @@ struct Config {
     std::string task{"SUB:Q100"};
     std::chrono::milliseconds warmup{30s}, duration{5min}, window{10s}, batchTimeout{30s}, startupTimeout{30s};
     std::chrono::milliseconds listenerDelay{};
+    std::chrono::milliseconds aggregationPeriod{};
     std::optional<std::chrono::milliseconds> monitoringStat{10s};
     std::filesystem::path output{"latency"};
     ClientRole role{ClientRole::STREAM_FEED};
@@ -150,6 +151,7 @@ Config parseArgs(int argc, char **argv) {
   --window 10s             --batch-timeout 30s
   --startup-timeout 30s    initial Profile delivery timeout
   --listener-delay 1ms     delay each market-event callback; default 0
+  --aggregation-period 1ms aggregate market notifications; default 0
   --events-batch-limit N   optimal, maximum, or a positive integer; default optimal
   --monitoring-stat 10s    0 disables QD statistics
   --role stream-feed|feed  default stream-feed
@@ -188,6 +190,8 @@ Config parseArgs(int argc, char **argv) {
             }
         } else if (arg == "--events-batch-limit") {
             config.eventsBatchLimit = parseEventsBatchLimit(value);
+        } else if (arg == "--aggregation-period" && value == "0") {
+            config.aggregationPeriod = 0ms;
         } else if (arg == "--listener-delay" && value == "0") {
             config.listenerDelay = 0ms;
         } else {
@@ -209,6 +213,8 @@ Config parseArgs(int argc, char **argv) {
                 config.startupTimeout = *duration;
             } else if (arg == "--listener-delay") {
                 config.listenerDelay = *duration;
+            } else if (arg == "--aggregation-period") {
+                config.aggregationPeriod = *duration;
             } else {
                 throw std::invalid_argument(std::format("unknown argument: {}", arg));
             }
@@ -769,6 +775,7 @@ class Reporter {
     std::size_t windowIndex_{};
     std::string endpointRole_;
     std::string eventsBatchLimit_;
+    std::int64_t aggregationPeriodMs_{};
 
     /** Flattens delivery counters into the values written to one report row. */
     struct DeliveryView {
@@ -862,15 +869,16 @@ class Reporter {
 
         summary_ << latency::utcTimestamp(start) << ',' << latency::utcTimestamp(end) << ',' << kind << ',' << s.count
                  << ',' << expectedPerBatch << ',' << publishPeriodMs_ << ',' << nominalEventsPerSecond_ << ','
-                 << endpointRole_ << ',' << eventsBatchLimit_ << ',' << delivery.published << ',' << delivery.delivered
-                 << ',' << delivery.listenerDeficit << ',' << listenerCoverage << ',' << delivery.excess << ','
-                 << delivery.fullPublications << ',' << delivery.partialPublications << ','
-                 << delivery.emptyPublications << ',' << delivery.uncorrelatedEvents << ',' << callbacks << ','
-                 << negative << ',' << missing << ',' << pending << ',' << microseconds(s.minimum) << ','
-                 << microseconds(s.mean) << ',' << microseconds(s.p50) << ',' << microseconds(s.p90) << ','
-                 << microseconds(s.p95) << ',' << microseconds(s.p99) << ',' << microseconds(s.p999) << ','
-                 << microseconds(s.maximum) << ',' << microseconds(s.q1) << ',' << microseconds(s.q3) << ','
-                 << microseconds(s.iqr) << ',' << microseconds(s.outlierThreshold) << ',' << s.outlierCount << '\n';
+                 << endpointRole_ << ',' << eventsBatchLimit_ << ',' << aggregationPeriodMs_ << ','
+                 << delivery.published << ',' << delivery.delivered << ',' << delivery.listenerDeficit << ','
+                 << listenerCoverage << ',' << delivery.excess << ',' << delivery.fullPublications << ','
+                 << delivery.partialPublications << ',' << delivery.emptyPublications << ','
+                 << delivery.uncorrelatedEvents << ',' << callbacks << ',' << negative << ',' << missing << ','
+                 << pending << ',' << microseconds(s.minimum) << ',' << microseconds(s.mean) << ','
+                 << microseconds(s.p50) << ',' << microseconds(s.p90) << ',' << microseconds(s.p95) << ','
+                 << microseconds(s.p99) << ',' << microseconds(s.p999) << ',' << microseconds(s.maximum) << ','
+                 << microseconds(s.q1) << ',' << microseconds(s.q3) << ',' << microseconds(s.iqr) << ','
+                 << microseconds(s.outlierThreshold) << ',' << s.outlierCount << '\n';
     }
 
     void writeCallbackSummary(std::int64_t start, std::int64_t end, std::string_view kind, std::string_view unit,
@@ -906,11 +914,11 @@ class Reporter {
     public:
     /** Opens all report files together so a run cannot proceed with only some outputs available. */
     Reporter(const std::filesystem::path &prefix, const latency::TaskPattern &pattern, ClientRole role,
-             std::int32_t eventsBatchLimit)
+             std::int32_t eventsBatchLimit, std::int64_t aggregationPeriodMs)
         : runStart_(latency::unixNanosNow()), expectedEventsPerBatch_(pattern.eventCount()),
           publishPeriodMs_(pattern.publishPeriod.count()), nominalEventsPerSecond_(pattern.nominalEventsPerSecond()),
           initialProfilesExpected_(pattern.symbolCount()), endpointRole_(roleName(role)),
-          eventsBatchLimit_(eventsBatchLimitName(eventsBatchLimit)) {
+          eventsBatchLimit_(eventsBatchLimitName(eventsBatchLimit)), aggregationPeriodMs_(aggregationPeriodMs) {
         for (const auto kind : EVENT_KINDS) {
             expectedEventsByKind_[eventKindIndex(kind)] = pattern.quantity(kind).value_or(0);
         }
@@ -935,7 +943,8 @@ class Reporter {
         }
 
         summary_ << "window_start_utc,window_end_utc,sample_kind,samples,expected_per_batch,publish_period_ms,"
-                    "nominal_events_per_second,endpoint_role,events_batch_limit,published,delivered,listener_deficit,"
+                    "nominal_events_per_second,endpoint_role,events_batch_limit,aggregation_period_ms,published,"
+                    "delivered,listener_deficit,"
                     "listener_coverage,"
                     "excess_events,full_publications,partial_publications,empty_publications,uncorrelated_events,"
                     "callbacks,"
@@ -1073,7 +1082,6 @@ int main(int argc, char **argv) {
         const auto runBatches = std::max<std::size_t>(1, pattern->batchCount(config.duration));
         Collector collector{*pattern, config.batchTimeout, expected * windowBatches, runBatches,
                             config.role == ClientRole::FEED};
-        Reporter reporter{config.output, *pattern, config.role, config.eventsBatchLimit};
 
         configureMonitoring(config.monitoringStat);
         const auto endpointRole =
@@ -1090,27 +1098,41 @@ int main(int argc, char **argv) {
         addType(Trade::TYPE, latency::EventKind::TRADE);
         addType(TradeETH::TYPE, latency::EventKind::TRADE_ETH);
         addType(Summary::TYPE, latency::EventKind::SUMMARY);
-        eventTypes.push_back(Profile::TYPE);
 
         auto subscription = feed->createSubscription(eventTypes);
+        subscription->setAggregationPeriod(config.aggregationPeriod);
         subscription->setEventsBatchLimit(config.eventsBatchLimit);
         subscription->addEventListener([&collector, delay = config.listenerDelay](const auto &events) {
             collector.handleMarket(events, delay);
         });
         subscription->addSymbols(pattern->symbols());
+
+        auto profiles = feed->createSubscription(Profile::TYPE);
+        profiles->addEventListener([&collector](const auto &events) {
+            collector.handle(events);
+        });
+        profiles->addSymbols(pattern->symbols());
+
         auto control = feed->createSubscription(TextMessage::TYPE);
         control->addEventListener([&collector](const auto &events) {
             collector.handle(events);
         });
         control->addSymbols(config.task);
+
+        const auto effectiveAggregationPeriodMs = subscription->getAggregationPeriod().getTime();
+        Reporter reporter{config.output, *pattern, config.role, subscription->getEventsBatchLimit(),
+                          effectiveAggregationPeriodMs};
+
         endpoint->connect(config.address);
         std::cout << std::format("Connected to {} using {}, task {}, expected {} events/batch every {} ms "
-                                 "(nominal {:.3f} events/s), listener delay {} ms, events batch limit {}. Waiting "
-                                 "for {} initial Profile events.\n",
+                                 "(nominal {:.3f} events/s), listener delay {} ms, events batch limit {}, "
+                                 "market aggregation period {} ms (requested {} ms). Waiting for {} initial "
+                                 "Profile events on a separate subscription.\n",
                                  config.address, roleName(config.role), config.task, expected,
                                  pattern->publishPeriod.count(), pattern->nominalEventsPerSecond(),
                                  config.listenerDelay.count(),
-                                 eventsBatchLimitName(subscription->getEventsBatchLimit()), pattern->symbolCount())
+                                 eventsBatchLimitName(subscription->getEventsBatchLimit()),
+                                 effectiveAggregationPeriodMs, config.aggregationPeriod.count(), pattern->symbolCount())
                   << std::flush;
 
         if (!collector.waitForProfiles(pattern->symbolCount(), config.startupTimeout)) {

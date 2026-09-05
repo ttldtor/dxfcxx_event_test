@@ -240,7 +240,7 @@ TEST_CASE("repeated benchmark comparison files") {
     std::ifstream report{repeatedFixture.path() / "REPORT.md"};
     const std::string reportText{std::istreambuf_iterator<char>{report}, {}};
 
-    CHECK(reportText.contains("| example | stream-feed | 3 |"));
+    CHECK(reportText.contains("| example | stream-feed | unknown | 0.000 ms | 3 |"));
     CHECK(reportText.contains("Listener coverage median"));
     CHECK(reportText.contains("Listener deficit median"));
     CHECK(reportText.contains("not a transport-loss"));
@@ -294,11 +294,12 @@ MONITORING_PERIOD=1s
 CLIENT_ROLE=feed
 LISTENER_DELAY=5us
 EVENTS_BATCH_LIMIT=optimal
+AGGREGATION_PERIOD=0
 COOLDOWN_SECONDS=0
 ADDRESS=127.0.0.1:7400
 LISTEN_ADDRESS=:7400
 PROFILE=first|SUB:Q1
-PROFILE=second|SUB:T2|stream-feed|1
+PROFILE=second|SUB:T2|stream-feed|1|10ms
 )"};
     const auto suite = parseBenchmarkSuite(input);
 
@@ -307,15 +308,19 @@ PROFILE=second|SUB:T2|stream-feed|1
     CHECK(suite->profiles.size() == 2);
     CHECK(suite->profiles[1].clientRole == "stream-feed");
     CHECK(suite->profiles[1].eventsBatchLimit == "1");
+    CHECK(suite->profiles[1].aggregationPeriod == "10ms");
 
-    const auto plan = buildBenchmarkPlan(*suite, {.clientRole = "feed", .eventsBatchLimit = "375"});
+    const auto plan =
+        buildBenchmarkPlan(*suite, {.clientRole = "feed", .eventsBatchLimit = "375", .aggregationPeriod = "1ms"});
 
     REQUIRE(plan.size() == 4);
     CHECK(plan[0].prefix == "first-r01");
     CHECK(plan[0].eventsBatchLimit == "375");
+    CHECK(plan[0].aggregationPeriod == "1ms");
     CHECK(plan[1].prefix == "second-r01");
     CHECK(plan[1].clientRole == "stream-feed");
     CHECK(plan[1].eventsBatchLimit == "1");
+    CHECK(plan[1].aggregationPeriod == "10ms");
     CHECK(plan[2].prefix == "second-r02");
     CHECK(plan[3].prefix == "first-r02");
 }

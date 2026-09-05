@@ -22,6 +22,7 @@ Options:
   --client-role <role>         Override feed or stream-feed
   --listener-delay <duration>  Override artificial listener delay
   --events-batch-limit <value> Override dxFeed event notification batch limit
+  --aggregation-period <value> Override market notification aggregation period
   --dry-run                    Print the execution plan without running it
   --help                       Show this help
 )";
@@ -81,6 +82,8 @@ int main(int argc, char **argv) {
             overrides.listenerDelay = *value;
         } else if (option == "--events-batch-limit") {
             overrides.eventsBatchLimit = *value;
+        } else if (option == "--aggregation-period") {
+            overrides.aggregationPeriod = *value;
         } else {
             std::cerr << "Unknown argument: " << option << '\n';
 

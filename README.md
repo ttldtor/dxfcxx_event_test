@@ -80,6 +80,7 @@ interval. Its main options are:
 | `--startup-timeout` | `30s` | Maximum wait for all unique initial Profile symbols before warm-up. |
 | `--listener-delay` | `0` | Artificial delay at the start of each market-event callback. |
 | `--events-batch-limit` | `optimal` | Maximum market events per native notification: `optimal`, `maximum`, or a positive integer. |
+| `--aggregation-period` | `0` | Per-subscription market notification aggregation period; `0` disables explicit aggregation. |
 | `--monitoring-stat` | `10s` | QD statistics period; `0` disables it. |
 | `--role` | `stream-feed` | Endpoint role: `stream-feed` preserves updates; `feed` permits conflation. |
 | `--output` | `latency` | Path and filename prefix for generated CSV files. |
@@ -173,10 +174,11 @@ Use `--dry-run` to validate the suite and display all planned commands without s
 written below `benchmark-results/<UTC timestamp>/`. A full default run takes approximately two hours and twenty
 minutes plus any machine-dependent startup overhead.
 
-A `PROFILE` line may override the endpoint role and events batch limit for that profile using
-`PROFILE=name|task|client-role|events-batch-limit`. Omitted fields inherit `CLIENT_ROLE` and `EVENTS_BATCH_LIMIT`
-from the suite; the latter defaults to `optimal`. Command-line `-EventsBatchLimit`/`--events-batch-limit` provides a
-suite-wide override for profiles that do not specify one.
+A `PROFILE` line may override the endpoint role, events batch limit, and aggregation period for that profile using
+`PROFILE=name|task|client-role|events-batch-limit|aggregation-period`. Omitted fields inherit `CLIENT_ROLE`,
+`EVENTS_BATCH_LIMIT`, and `AGGREGATION_PERIOD` from the suite; the last two default to `optimal` and `0`.
+Command-line `--events-batch-limit` and `--aggregation-period` provide suite-wide overrides for profiles that do not
+specify them.
 
 For a short contract A/B, run `tools/conflation-diagnostic.conf` once with the default `feed` role and once with a
 `stream-feed` override. The task, symbol set, cadence, warm-up, and measurement duration remain identical:
@@ -261,6 +263,23 @@ control. Limit `1` is intentionally a callback-overhead stress case:
 ```sh
 ./build/latency_runner --binary-directory ./build \
     --config ./tools/events-batch-limit.conf
+```
+
+`tools/aggregation-period.conf` isolates the per-subscription aggregation setting with FEED profiles using `0`,
+`1ms`, and `10ms`, plus a `STREAM_FEED` profile using `0` as a delivery-contract control. All profiles use the same
+shuffled 375-symbol, 150,000-event/s workload. The aggregation setting is applied only to the combined recurring
+market-event subscription before symbols are added. Initial `Profile` events use a separate subscription, and the
+`TextMessage` control channel is also separate. The client records the effective value returned by the C++ API in
+`aggregation_period_ms`; no Java system property is involved.
+
+```powershell
+.\build\Release\latency_runner.exe --binary-directory .\build\Release `
+    --config .\tools\aggregation-period.conf
+```
+
+```sh
+./build/latency_runner --binary-directory ./build \
+    --config ./tools/aggregation-period.conf
 ```
 
 Each output prefix includes its repetition, for example `150k-100ms-r02`. The analyzer additionally writes

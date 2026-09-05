@@ -1,0 +1,11 @@
+started_utc=2026-09-05T22:45:24Z
+git_commit=6a8af9e2d4d4dc740e3293c0f69f2ab7f718e309
+os=Windows
+architecture=x86_64
+processor_count=32
+binary_directory=C:\w\!active\dxfcxx_event_test\cmake-build-release-visual-studio-2026
+suite_config=C:\w\!active\dxfcxx_event_test\tools\aggregation-period.conf
+client_role=feed
+listener_delay=0
+events_batch_limit=optimal
+aggregation_period=0

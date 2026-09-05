@@ -25,6 +25,9 @@ struct BenchmarkSuiteProfile {
 
     /// Optional native event-notification batch-limit override.
     std::optional<std::string> eventsBatchLimit;
+
+    /// Optional market-event notification aggregation-period override.
+    std::optional<std::string> aggregationPeriod;
 };
 
 /// Contains global settings and workload profiles parsed from a suite configuration.
@@ -59,6 +62,9 @@ struct BenchmarkSuite {
     /// Default native event-notification batch limit.
     std::string eventsBatchLimit{"optimal"};
 
+    /// Default market-event notification aggregation period.
+    std::string aggregationPeriod{"0"};
+
     /// Pause between consecutive benchmark runs, in seconds.
     std::size_t cooldownSeconds{};
 
@@ -82,6 +88,9 @@ struct BenchmarkOverrides {
 
     /// Optional event-notification batch-limit override.
     std::optional<std::string> eventsBatchLimit;
+
+    /// Optional market-event notification aggregation-period override.
+    std::optional<std::string> aggregationPeriod;
 };
 
 /// Describes one fully resolved server/client execution in a benchmark plan.
@@ -106,6 +115,9 @@ struct BenchmarkRun {
 
     /// Effective native event-notification batch limit.
     std::string eventsBatchLimit;
+
+    /// Effective market-event notification aggregation period.
+    std::string aggregationPeriod;
 };
 
 /// Parses and validates a benchmark suite configuration.

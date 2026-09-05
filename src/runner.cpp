@@ -131,8 +131,10 @@ std::string timestamp(bool compact) {
 /// Returns the platform-specific filename for a benchmark executable.
 std::string executableName(std::string_view name) {
 #ifdef _WIN32
+
     return std::format("{}.exe", name);
 #else
+
     return std::string{name};
 #endif
 }
@@ -600,13 +602,14 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
         if (key == "PROFILE") {
             const auto parts = split(value, '|');
 
-            if (parts.size() < 2 || parts.size() > 4 || parts[0].empty() || parts[1].empty()) {
+            if (parts.size() < 2 || parts.size() > 5 || parts[0].empty() || parts[1].empty()) {
                 return std::unexpected{std::format("Invalid PROFILE line: {}", rawLine)};
             }
 
             suite.profiles.push_back({parts[0], parts[1],
                                       parts.size() >= 3 && !parts[2].empty() ? std::optional{parts[2]} : std::nullopt,
-                                      parts.size() >= 4 && !parts[3].empty() ? std::optional{parts[3]} : std::nullopt});
+                                      parts.size() >= 4 && !parts[3].empty() ? std::optional{parts[3]} : std::nullopt,
+                                      parts.size() >= 5 && !parts[4].empty() ? std::optional{parts[4]} : std::nullopt});
         } else {
             settings[key] = value;
         }
@@ -684,12 +687,23 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
         suite.eventsBatchLimit = found->second;
     }
 
-    const std::vector<std::string_view> known{"REPETITIONS",       "WARMUP",
-                                              "DURATION",          "WINDOW",
-                                              "BATCH_TIMEOUT",     "STARTUP_TIMEOUT",
-                                              "MONITORING_PERIOD", "CLIENT_ROLE",
-                                              "LISTENER_DELAY",    "EVENTS_BATCH_LIMIT",
-                                              "COOLDOWN_SECONDS",  "ADDRESS",
+    if (const auto found = settings.find("AGGREGATION_PERIOD"); found != settings.end()) {
+        suite.aggregationPeriod = found->second;
+    }
+
+    const std::vector<std::string_view> known{"REPETITIONS",
+                                              "WARMUP",
+                                              "DURATION",
+                                              "WINDOW",
+                                              "BATCH_TIMEOUT",
+                                              "STARTUP_TIMEOUT",
+                                              "MONITORING_PERIOD",
+                                              "CLIENT_ROLE",
+                                              "LISTENER_DELAY",
+                                              "EVENTS_BATCH_LIMIT",
+                                              "AGGREGATION_PERIOD",
+                                              "COOLDOWN_SECONDS",
+                                              "ADDRESS",
                                               "LISTEN_ADDRESS"};
 
     for (const auto &[key, value] : settings) {
@@ -732,13 +746,15 @@ std::vector<BenchmarkRun> buildBenchmarkPlan(const BenchmarkSuite &suite, const 
     const auto defaultRole = overrides.clientRole.value_or(suite.clientRole);
     const auto listenerDelay = overrides.listenerDelay.value_or(suite.listenerDelay);
     const auto defaultBatchLimit = overrides.eventsBatchLimit.value_or(suite.eventsBatchLimit);
+    const auto defaultAggregationPeriod = overrides.aggregationPeriod.value_or(suite.aggregationPeriod);
 
     for (std::size_t repetition = 1; repetition <= suite.repetitions; ++repetition) {
         for (std::size_t position = 0; position < suite.profiles.size(); ++position) {
             const auto &profile = suite.profiles[(position + repetition - 1) % suite.profiles.size()];
             result.push_back({profile.name, repetition, std::format("{}-r{:02}", profile.name, repetition),
                               profile.task, profile.clientRole.value_or(defaultRole), listenerDelay,
-                              profile.eventsBatchLimit.value_or(defaultBatchLimit)});
+                              profile.eventsBatchLimit.value_or(defaultBatchLimit),
+                              profile.aggregationPeriod.value_or(defaultAggregationPeriod)});
         }
     }
 
@@ -778,10 +794,10 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
 
     if (dryRun) {
         for (const auto &run : plan) {
-            std::cout << std::format("{} : {} ; role={} events-batch-limit={} listener-delay={} "
+            std::cout << std::format("{} : {} ; role={} events-batch-limit={} aggregation-period={} listener-delay={} "
                                      "startup-timeout={} warmup={} duration={}\n",
-                                     run.prefix, run.task, run.clientRole, run.eventsBatchLimit, run.listenerDelay,
-                                     suite.startupTimeout, suite.warmup, suite.duration);
+                                     run.prefix, run.task, run.clientRole, run.eventsBatchLimit, run.aggregationPeriod,
+                                     run.listenerDelay, suite.startupTimeout, suite.warmup, suite.duration);
         }
 
         std::cout << std::format("Analyzer: {} --monitoring-period {}\n", analyzer.string(), suite.monitoringPeriod);
@@ -812,7 +828,7 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
     }
 
     std::ofstream manifest{runDirectory / "run-manifest.csv"};
-    manifest << "profile,repetition,task,client_role,events_batch_limit,status,client_exit_code\n";
+    manifest << "profile,repetition,task,client_role,events_batch_limit,aggregation_period,status,client_exit_code\n";
     std::ofstream environment{runDirectory / "environment.txt"};
     environment << "started_utc=" << timestamp(false) << '\n';
     environment << "git_commit=" << gitCommit() << '\n';
@@ -843,7 +859,9 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
                 << "suite_config=" << std::filesystem::absolute(configPath).string() << '\n'
                 << "client_role=" << overrides.clientRole.value_or(suite.clientRole) << '\n'
                 << "listener_delay=" << overrides.listenerDelay.value_or(suite.listenerDelay) << '\n'
-                << "events_batch_limit=" << overrides.eventsBatchLimit.value_or(suite.eventsBatchLimit) << '\n';
+                << "events_batch_limit=" << overrides.eventsBatchLimit.value_or(suite.eventsBatchLimit) << '\n'
+                << "aggregation_period=" << overrides.aggregationPeriod.value_or(suite.aggregationPeriod) << '\n';
+    environment.flush();
 
     bool failed{};
 
@@ -876,6 +894,8 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
                                             run.listenerDelay,
                                             "--events-batch-limit",
                                             run.eventsBatchLimit,
+                                            "--aggregation-period",
+                                            run.aggregationPeriod,
                                             "--warmup",
                                             suite.warmup,
                                             "--duration",
@@ -919,7 +939,7 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
         }
 
         manifest << csv(run.profile) << ',' << run.repetition << ',' << csv(run.task) << ',' << run.clientRole << ','
-                 << run.eventsBatchLimit << ',' << status << ',' << clientExit << '\n';
+                 << run.eventsBatchLimit << ',' << run.aggregationPeriod << ',' << status << ',' << clientExit << '\n';
         manifest.flush();
 
         if (index + 1 < plan.size()) {
