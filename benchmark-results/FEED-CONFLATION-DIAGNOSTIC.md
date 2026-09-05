@@ -74,3 +74,10 @@ deficit. This is a diagnostic control, not a proposed product workaround.
 The black-box controls now consistently point to per-record-key `FEED` supersession and a position-dependent window
 between record processing and C++ listener observation. The next useful step is targeted instrumentation or source
 tracing at the QD-to-listener boundary rather than further workload randomization.
+
+The notification batch-limit experiment provides the next boundary:
+[`Event notification batch-limit benchmark`](20260905T210242Z/BATCH-LIMIT-ANALYSIS.md). With the limit forced to one,
+the connector still reads approximately 149,439 records/s with zero reported drops, while the listener sees only
+26.121% of the correlated states. The supersession is therefore client-side, after connector read and before the
+native subscription callback. Ordinary limits change callback shape but do not produce a monotonic coverage change;
+`STREAM_FEED` continues to deliver exactly 100%.

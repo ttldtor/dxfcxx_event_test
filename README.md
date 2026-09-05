@@ -154,7 +154,9 @@ instrument. The 1 ms profile is a scheduler/publisher stress case and should be 
 uses a one-minute warm-up, a ten-minute measurement, ten-second windows, and a fresh server/client pair. Profile
 order rotates between repetitions and a 30-second cool-down separates runs.
 
-Build the Release binaries first, then run the launcher for the host operating system. On Windows:
+Build the Release binaries first, then run the launcher for the host operating system. Benchmark orchestration is
+implemented by the cross-platform `latency_runner` executable; the PowerShell and Bash launchers are thin
+compatibility wrappers that forward their arguments to it. On Windows:
 
 ```powershell
 .\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release

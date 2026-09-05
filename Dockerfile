@@ -52,7 +52,8 @@ WORKDIR /work
 
 RUN latency_server --help > /dev/null \
     && latency_client --help > /dev/null \
-    && latency_analyzer --help > /dev/null
+    && latency_analyzer --help > /dev/null \
+    && latency_runner --help > /dev/null
 
 EXPOSE 7400
 CMD ["latency_client", "--help"]

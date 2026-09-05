@@ -94,7 +94,7 @@ jobs:
       - name: Smoke-test commands
         run: |
           docker run --rm latency-test:${{ strategy.job-index }} sh -ec '
-            for binary in latency_server latency_client latency_analyzer; do
+            for binary in latency_server latency_client latency_analyzer latency_runner; do
               dependencies="$(ldd "/opt/latency/bin/$binary")"
               printf "%s\n" "$dependencies"
               ! printf "%s\n" "$dependencies" | grep --fixed-strings --quiet "not found"
@@ -105,6 +105,7 @@ jobs:
           docker run --rm latency-test:${{ strategy.job-index }} latency_server --help
           docker run --rm latency-test:${{ strategy.job-index }} latency_client --help
           docker run --rm latency-test:${{ strategy.job-index }} latency_analyzer --help
+          docker run --rm latency-test:${{ strategy.job-index }} latency_runner --help
 
   linux-container-end-to-end:
     name: Linux container / end-to-end

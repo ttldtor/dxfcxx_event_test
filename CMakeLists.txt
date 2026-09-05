@@ -28,7 +28,7 @@ if(MSVC AND DXFCXX_LINK_STATIC_RUNTIME)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-add_library(latency_core src/core.cpp src/monitoring.cpp)
+add_library(latency_core src/core.cpp src/monitoring.cpp src/runner.cpp)
 target_include_directories(latency_core PUBLIC include)
 
 add_executable(latency_server src/server.cpp)
@@ -39,6 +39,9 @@ target_link_libraries(latency_client PRIVATE latency_core dxfcxx::static)
 
 add_executable(latency_analyzer src/analyzer.cpp)
 target_link_libraries(latency_analyzer PRIVATE latency_core)
+
+add_executable(latency_runner src/runner_main.cpp)
+target_link_libraries(latency_runner PRIVATE latency_core)
 
 foreach(target latency_server latency_client)
     add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -53,7 +56,7 @@ elseif(UNIX)
     set_target_properties(latency_server latency_client PROPERTIES INSTALL_RPATH "$ORIGIN")
 endif()
 
-install(TARGETS latency_server latency_client latency_analyzer RUNTIME DESTINATION bin)
+install(TARGETS latency_server latency_client latency_analyzer latency_runner RUNTIME DESTINATION bin)
 install(FILES $<TARGET_FILE:dxfcxx::graal> DESTINATION bin)
 install(FILES dxfeed.system.properties DESTINATION bin)
 
@@ -75,4 +78,5 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_BINARY_DIR}/dxfeed.system.properties $<TARGET_FILE_DIR:latency_tests>)
     add_test(NAME latency_tests COMMAND latency_tests)
     add_test(NAME latency_analyzer_help COMMAND latency_analyzer --help)
+    add_test(NAME latency_runner_help COMMAND latency_runner --help)
 endif()

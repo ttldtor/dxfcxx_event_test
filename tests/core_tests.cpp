@@ -1,5 +1,6 @@
 #include "latency/core.hpp"
 #include "latency/monitoring.hpp"
+#include "latency/runner.hpp"
 
 #include <doctest/doctest.h>
 
@@ -10,6 +11,7 @@
 #include <format>
 #include <fstream>
 #include <ranges>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -271,4 +273,50 @@ TEST_CASE("invalid monitoring inputs are rejected") {
 TEST_CASE("the default isolate properties file enables nanosecond timestamps") {
     INFO("working directory: " << std::filesystem::current_path().string());
     CHECK(dxfcpp::System::getProperty("dxscheme.nanoTime") == "true");
+}
+
+TEST_CASE("benchmark suite parsing and rotating execution plan") {
+    std::istringstream input{R"(# benchmark suite
+REPETITIONS=2
+WARMUP=1s
+DURATION=2s
+WINDOW=1s
+BATCH_TIMEOUT=3s
+STARTUP_TIMEOUT=4s
+MONITORING_PERIOD=1s
+CLIENT_ROLE=feed
+LISTENER_DELAY=5us
+EVENTS_BATCH_LIMIT=optimal
+COOLDOWN_SECONDS=0
+ADDRESS=127.0.0.1:7400
+LISTEN_ADDRESS=:7400
+PROFILE=first|SUB:Q1
+PROFILE=second|SUB:T2|stream-feed|1
+)"};
+    const auto suite = parseBenchmarkSuite(input);
+
+    REQUIRE(suite.has_value());
+    CHECK(suite->repetitions == 2);
+    CHECK(suite->profiles.size() == 2);
+    CHECK(suite->profiles[1].clientRole == "stream-feed");
+    CHECK(suite->profiles[1].eventsBatchLimit == "1");
+
+    const auto plan = buildBenchmarkPlan(*suite, {.clientRole = "feed", .eventsBatchLimit = "375"});
+
+    REQUIRE(plan.size() == 4);
+    CHECK(plan[0].prefix == "first-r01");
+    CHECK(plan[0].eventsBatchLimit == "375");
+    CHECK(plan[1].prefix == "second-r01");
+    CHECK(plan[1].clientRole == "stream-feed");
+    CHECK(plan[1].eventsBatchLimit == "1");
+    CHECK(plan[2].prefix == "second-r02");
+    CHECK(plan[3].prefix == "first-r02");
+}
+
+TEST_CASE("invalid benchmark suite settings are rejected") {
+    std::istringstream input{R"(REPETITIONS=0
+UNKNOWN=value
+)"};
+
+    CHECK_FALSE(parseBenchmarkSuite(input).has_value());
 }
