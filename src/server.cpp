@@ -73,10 +73,18 @@ class Generator {
     bool stopping_{};
     std::thread thread_;
 
+    struct EventPool {
+        latency::EventKind kind{};
+        std::size_t quantity{};
+        std::vector<std::shared_ptr<EventType>> events;
+    };
+
     struct ActiveTask {
         std::string command;
         latency::TaskPattern pattern;
-        std::vector<std::shared_ptr<EventType>> events;
+        std::vector<EventPool> pools;
+        std::shared_ptr<TextMessage> marker;
+        std::vector<std::shared_ptr<EventType>> publication;
         std::uint32_t tick{};
         std::uint64_t publications{}, skippedDeadlines{};
         std::chrono::nanoseconds preparationTotal{}, preparationMaximum{};
@@ -108,43 +116,60 @@ class Generator {
         });
     }
 
-    // Allocate and initialize the stable event objects that are updated and republished on every tick.
-    static std::vector<std::shared_ptr<EventType>> makeEvents(const latency::TaskPattern &pattern,
-                                                              const std::string &command) {
-        std::vector<std::shared_ptr<EventType>> events;
-
-        events.reserve(pattern.eventCount() + 1);
-
-        for (const auto &symbol : pattern.symbols(latency::EventKind::QUOTE)) {
+    static std::shared_ptr<EventType> makeEvent(latency::EventKind kind, const std::string &symbol) {
+        switch (kind) {
+        case latency::EventKind::QUOTE: {
             auto event = std::make_shared<Quote>(symbol);
             event->setBidExchangeCode('B');
             event->setAskExchangeCode('A');
             event->setBidSize(1);
             event->setAskSize(1);
-            events.push_back(std::move(event));
-        }
 
-        for (const auto &symbol : pattern.symbols(latency::EventKind::TRADE)) {
+            return event;
+        }
+        case latency::EventKind::TRADE: {
             auto event = std::make_shared<Trade>(symbol);
             event->setSize(1);
-            events.push_back(std::move(event));
-        }
 
-        for (const auto &symbol : pattern.symbols(latency::EventKind::TRADE_ETH)) {
+            return event;
+        }
+        case latency::EventKind::TRADE_ETH: {
             auto event = std::make_shared<TradeETH>(symbol);
             event->setSize(1);
-            events.push_back(std::move(event));
-        }
 
-        for (const auto &symbol : pattern.symbols(latency::EventKind::SUMMARY)) {
+            return event;
+        }
+        case latency::EventKind::SUMMARY: {
             auto event = std::make_shared<Summary>(symbol);
             event->setDayId(1);
-            events.push_back(std::move(event));
+
+            return event;
+        }
         }
 
-        events.push_back(std::make_shared<TextMessage>(command, "LATENCY_BATCH"));
+        throw std::invalid_argument("unknown event kind");
+    }
 
-        return events;
+    // Allocate one stable event object per subscribed record key. Each publication selects a rotating subset.
+    static std::vector<EventPool> makeEventPools(const latency::TaskPattern &pattern) {
+        std::vector<EventPool> pools;
+        const auto symbols = pattern.symbols();
+
+        pools.reserve(pattern.items.size());
+
+        for (const auto &item : pattern.items) {
+            EventPool pool{item.kind, item.quantity};
+
+            pool.events.reserve(symbols.size());
+
+            for (const auto &symbol : symbols) {
+                pool.events.push_back(makeEvent(item.kind, symbol));
+            }
+
+            pools.push_back(std::move(pool));
+        }
+
+        return pools;
     }
 
     static std::vector<std::shared_ptr<EventType>> makeInitialEvents(const latency::TaskPattern &pattern) {
@@ -164,38 +189,48 @@ class Generator {
         ++active.tick;
         const auto sequence = static_cast<std::int32_t>(active.tick % TextMessage::MAX_SEQUENCE);
 
-        // Event fields identify the batch. The marker timestamp is captured after preparation, at the publish boundary.
-        for (const auto &event : active.events) {
-            if (auto quote = event->sharedAs<Quote>()) {
-                quote->setBidSize(sequence);
-                quote->setAskSize(1);
-                quote->setBidPrice(100.0 + active.tick % 100);
-                quote->setAskPrice(100.01 + active.tick % 100);
-            } else if (auto trade = event->sharedAs<Trade>()) {
-                trade->setPrice(100.0 + active.tick % 100);
-                trade->setSize(1);
-                trade->setSequence(sequence);
-            } else if (auto tradeEth = event->sharedAs<TradeETH>()) {
-                tradeEth->setPrice(100.0 + active.tick % 100);
-                tradeEth->setSize(1);
-                tradeEth->setSequence(sequence);
-            } else if (auto summary = event->sharedAs<Summary>()) {
-                summary->setDayId(sequence);
-                summary->setDayOpenPrice(99);
-                summary->setDayHighPrice(101 + active.tick % 100);
-                summary->setDayLowPrice(98);
-                summary->setDayClosePrice(100 + active.tick % 100);
+        active.publication.clear();
+
+        // Event fields identify the batch. A larger symbol universe changes record-key cardinality, not batch size.
+        for (const auto &pool : active.pools) {
+            const auto first = active.publications * pool.quantity % pool.events.size();
+
+            for (std::size_t i = 0; i < pool.quantity; ++i) {
+                const auto &event = pool.events[(first + i) % pool.events.size()];
+
+                if (auto quote = event->sharedAs<Quote>()) {
+                    quote->setBidSize(sequence);
+                    quote->setAskSize(1);
+                    quote->setBidPrice(100.0 + active.tick % 100);
+                    quote->setAskPrice(100.01 + active.tick % 100);
+                } else if (auto trade = event->sharedAs<Trade>()) {
+                    trade->setPrice(100.0 + active.tick % 100);
+                    trade->setSize(1);
+                    trade->setSequence(sequence);
+                } else if (auto tradeEth = event->sharedAs<TradeETH>()) {
+                    tradeEth->setPrice(100.0 + active.tick % 100);
+                    tradeEth->setSize(1);
+                    tradeEth->setSequence(sequence);
+                } else if (auto summary = event->sharedAs<Summary>()) {
+                    summary->setDayId(sequence);
+                    summary->setDayOpenPrice(99);
+                    summary->setDayHighPrice(101 + active.tick % 100);
+                    summary->setDayLowPrice(98);
+                    summary->setDayClosePrice(100 + active.tick % 100);
+                }
+
+                active.publication.push_back(event);
             }
         }
 
         const auto nowNs = latency::unixNanosNow();
-        const auto marker = active.events.back()->sharedAs<TextMessage>();
-        marker->setTime(nowNs / 1'000'000);
-        marker->setSequence(sequence);
-        marker->setText(std::format("LATENCY_BATCH:{}", nowNs));
+        active.marker->setTime(nowNs / 1'000'000);
+        active.marker->setSequence(sequence);
+        active.marker->setText(std::format("LATENCY_BATCH:{}", nowNs));
+        active.publication.push_back(active.marker);
         const auto publishStart = std::chrono::steady_clock::now();
         const auto preparation = std::chrono::duration_cast<std::chrono::nanoseconds>(publishStart - preparationStart);
-        publisher_->publishEvents(active.events);
+        publisher_->publishEvents(active.publication);
         const auto publishDuration =
             std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - publishStart);
         ++active.publications;
@@ -245,8 +280,12 @@ class Generator {
                                              pending->command);
                 }
 
-                active.emplace(
-                    ActiveTask{pending->command, pending->pattern, makeEvents(pending->pattern, pending->command)});
+                auto publication = std::vector<std::shared_ptr<EventType>>{};
+
+                publication.reserve(pending->pattern.eventCount() + 1);
+                active.emplace(ActiveTask{pending->command, pending->pattern, makeEventPools(pending->pattern),
+                                          std::make_shared<TextMessage>(pending->command, "LATENCY_BATCH"),
+                                          std::move(publication)});
                 nextTick = std::chrono::steady_clock::now();
                 std::cout << std::format("Subscriptions ready for {} symbols. Started {} ({} events/batch, "
                                          "period={} ms, nominal={:.3f} events/s)\n",

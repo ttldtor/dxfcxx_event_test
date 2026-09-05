@@ -84,6 +84,16 @@ TEST_CASE("task and duration parsing") {
     REQUIRE(secondsCadence.has_value());
     CHECK(secondsCadence->toString() == "SUB:Q1@2s");
 
+    const auto expandedUniverse = parseTask("SUB:Q375;T375;E375;S375@10ms#3750");
+
+    REQUIRE(expandedUniverse.has_value());
+    CHECK(expandedUniverse->toString() == "SUB:Q375;T375;E375;S375@10ms#3750");
+    CHECK(expandedUniverse->eventCount() == 1500);
+    CHECK(expandedUniverse->symbolCount() == 3750);
+    CHECK(expandedUniverse->symbols().front() == "SYM0000");
+    CHECK(expandedUniverse->symbols().back() == "SYM3749");
+    CHECK(expandedUniverse->symbols(EventKind::QUOTE).size() == 375);
+
     CHECK_FALSE(parseTask("SUB:").has_value());
     CHECK_FALSE(parseTask("SUB:Q0").has_value());
     CHECK_FALSE(parseTask("SUB:Q1;Q2").has_value());
@@ -94,6 +104,11 @@ TEST_CASE("task and duration parsing") {
     CHECK_FALSE(parseTask("SUB:Q1@").has_value());
     CHECK_FALSE(parseTask("SUB:Q1@0ms").has_value());
     CHECK_FALSE(parseTask("SUB:Q1@10ms@20ms").has_value());
+    CHECK_FALSE(parseTask("SUB:Q10#").has_value());
+    CHECK_FALSE(parseTask("SUB:Q10#0").has_value());
+    CHECK_FALSE(parseTask("SUB:Q10#9").has_value());
+    CHECK_FALSE(parseTask("SUB:Q10#20#30").has_value());
+    CHECK_FALSE(parseTask("SUB:Q10#20@10ms").has_value());
     CHECK_FALSE(parseTask("SUB:Q999999999999999999999999999999").has_value());
 
     CHECK(parseDuration("10s") == 10s);

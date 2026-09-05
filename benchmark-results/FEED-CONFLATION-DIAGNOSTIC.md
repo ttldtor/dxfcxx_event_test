@@ -57,3 +57,8 @@ that queues updates instead of retaining only the latest ticker state.
 Increase the subscribed symbol universe without increasing the 150,000 events/s publication rate. Rotate each
 publication across that universe and compare `FEED` with `STREAM_FEED`. This separates the effect of record-key
 cardinality and ticker-state retention from the effect of raw throughput.
+
+This experiment is complete: [`Symbol-cardinality benchmark`](20260905T192009Z/CARDINALITY-ANALYSIS.md). With the
+same 150,000 events/s workload, listener coverage is 99.855% for 375 symbols and exactly 100% for both 3,750 and
+10,000 symbols. Spreading updates over more record keys removes the deficit while modestly increasing latency and
+QD storage state. The next controlled variable is event-type order.

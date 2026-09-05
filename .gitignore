@@ -50,3 +50,4 @@ cmake-build-*/
 /benchmark-results/**/*.log
 /benchmark-results/**/server-session-notes.txt
 /SUPDXFD-22805/
+/.codex/config.toml

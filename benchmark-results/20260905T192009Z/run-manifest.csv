@@ -1,0 +1,10 @@
+profile,repetition,task,status,client_exit_code
+"150k-375-symbols",1,"SUB:Q375;T375;E375;S375@10ms#375",passed,0
+"150k-3750-symbols",1,"SUB:Q375;T375;E375;S375@10ms#3750",passed,0
+"150k-10000-symbols",1,"SUB:Q375;T375;E375;S375@10ms#10000",passed,0
+"150k-3750-symbols",2,"SUB:Q375;T375;E375;S375@10ms#3750",passed,0
+"150k-10000-symbols",2,"SUB:Q375;T375;E375;S375@10ms#10000",passed,0
+"150k-375-symbols",2,"SUB:Q375;T375;E375;S375@10ms#375",passed,0
+"150k-10000-symbols",3,"SUB:Q375;T375;E375;S375@10ms#10000",passed,0
+"150k-375-symbols",3,"SUB:Q375;T375;E375;S375@10ms#375",passed,0
+"150k-3750-symbols",3,"SUB:Q375;T375;E375;S375@10ms#3750",passed,0

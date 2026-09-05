@@ -46,6 +46,10 @@ std::size_t TaskPattern::eventCount() const {
 }
 
 std::size_t TaskPattern::symbolCount() const {
+    if (subscribedSymbolCount) {
+        return *subscribedSymbolCount;
+    }
+
     const auto largest = std::ranges::max_element(items, {}, &PatternItem::quantity);
 
     return largest == items.end() ? 0 : largest->quantity;
@@ -73,6 +77,11 @@ std::string TaskPattern::toString() const {
             result += std::to_string(publishPeriod.count());
             result += "ms";
         }
+    }
+
+    if (subscribedSymbolCount) {
+        result.push_back('#');
+        result += std::to_string(*subscribedSymbolCount);
     }
 
     return result;
@@ -147,8 +156,16 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
         return std::unexpected(ParseError{0, "expected SUB:"});
     }
 
-    const auto separator = text.find('@', PREFIX.size());
-    const auto patternEnd = separator == std::string_view::npos ? text.size() : separator;
+    const auto periodSeparator = text.find('@', PREFIX.size());
+    const auto symbolSeparator = text.find('#', PREFIX.size());
+
+    if (periodSeparator != std::string_view::npos && symbolSeparator != std::string_view::npos &&
+        symbolSeparator < periodSeparator) {
+        return std::unexpected(ParseError{symbolSeparator, "symbol count must follow publish period"});
+    }
+
+    const auto patternEnd = std::min(periodSeparator == std::string_view::npos ? text.size() : periodSeparator,
+                                     symbolSeparator == std::string_view::npos ? text.size() : symbolSeparator);
     std::size_t pos = PREFIX.size();
 
     if (pos == patternEnd) {
@@ -212,24 +229,53 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
         }
     }
 
-    if (separator != std::string_view::npos) {
-        const auto periodText = text.substr(separator + 1);
+    if (periodSeparator != std::string_view::npos) {
+        const auto periodEnd = symbolSeparator == std::string_view::npos ? text.size() : symbolSeparator;
+        const auto periodText = text.substr(periodSeparator + 1, periodEnd - periodSeparator - 1);
 
         if (periodText.empty()) {
-            return std::unexpected(ParseError{separator + 1, "expected publish period"});
+            return std::unexpected(ParseError{periodSeparator + 1, "expected publish period"});
         }
 
         if (periodText.find('@') != std::string_view::npos) {
-            return std::unexpected(ParseError{separator + 1 + periodText.find('@'), "duplicate publish period"});
+            return std::unexpected(ParseError{periodSeparator + 1 + periodText.find('@'), "duplicate publish period"});
         }
 
         const auto period = parseDuration(periodText);
 
         if (!period) {
-            return std::unexpected(ParseError{separator + 1, period.error()});
+            return std::unexpected(ParseError{periodSeparator + 1, period.error()});
         }
 
         task.publishPeriod = *period;
+    }
+
+    if (symbolSeparator != std::string_view::npos) {
+        const auto symbolText = text.substr(symbolSeparator + 1);
+
+        if (symbolText.empty()) {
+            return std::unexpected(ParseError{symbolSeparator + 1, "expected symbol count"});
+        }
+
+        if (symbolText.find('#') != std::string_view::npos) {
+            return std::unexpected(ParseError{symbolSeparator + 1 + symbolText.find('#'), "duplicate symbol count"});
+        }
+
+        std::size_t count{};
+        const auto [ptr, ec] = std::from_chars(symbolText.data(), symbolText.data() + symbolText.size(), count);
+
+        if (ec != std::errc{} || ptr != symbolText.data() + symbolText.size() || !count) {
+            return std::unexpected(ParseError{symbolSeparator + 1, "invalid symbol count"});
+        }
+
+        const auto largest = task.symbolCount();
+
+        if (count < largest) {
+            return std::unexpected(
+                ParseError{symbolSeparator + 1, "symbol count must not be smaller than an event quantity"});
+        }
+
+        task.subscribedSymbolCount = count;
     }
 
     return task;

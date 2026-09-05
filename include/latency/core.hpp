@@ -40,6 +40,8 @@ struct TaskPattern {
     std::vector<PatternItem> items;
     /** Interval between server publications. */
     std::chrono::milliseconds publishPeriod{std::chrono::seconds{1}};
+    /** Explicit subscribed symbol-universe size, or empty when the largest event quantity defines it. */
+    std::optional<std::size_t> subscribedSymbolCount;
 
     /**
      * Returns the total number of recurring events generated in each batch.
@@ -96,9 +98,10 @@ struct ParseError {
 };
 
 /**
- * Parses a subscription task in the `SUB:<type><quantity>[;...][@<period>]` DSL.
+ * Parses a subscription task in the `SUB:<type><quantity>[;...][@<period>][#<symbols>]` DSL.
  *
  * Supported type codes are `Q`, `T`, `E`, and `S`. Each type may occur at most once and its quantity must be positive.
+ * An optional symbol count expands the subscribed universe without changing the events published per batch.
  *
  * @param text The task text, for example `SUB:Q100;S1;T5@100ms`.
  * @return The parsed pattern, or a positional parse error.

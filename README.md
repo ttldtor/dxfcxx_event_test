@@ -72,19 +72,22 @@ interval. Its main options are:
 | Option | Default | Purpose |
 |---|---:|---|
 | `--address` | `127.0.0.1:7400` | Server endpoint. |
-| `--task` | `SUB:Q100` | Synthetic event types and instrument counts. |
+| `--task` | `SUB:Q100` | Synthetic event quantities, cadence, and optional subscribed universe. |
 | `--warmup` | `30s` | Data collection period excluded from reports. |
 | `--duration` | `5m` | Reported measurement period. |
 | `--window` | `10s` | Size of each summary row's time window. |
 | `--batch-timeout` | `30s` | Maximum wait for an incomplete marker/event batch. |
 | `--startup-timeout` | `30s` | Maximum wait for all unique initial Profile symbols before warm-up. |
+| `--listener-delay` | `0` | Artificial delay at the start of each market-event callback. |
 | `--monitoring-stat` | `10s` | QD statistics period; `0` disables it. |
 | `--role` | `stream-feed` | Endpoint role: `stream-feed` preserves updates; `feed` permits conflation. |
 | `--output` | `latency` | Path and filename prefix for generated CSV files. |
 
-The task DSL is `SUB:<type><quantity>[;...][@<period>]`: `Q`, `T`, `E`, and `S` mean Quote, Trade, TradeETH, and
-Summary. Each type may occur once and quantities must be positive. All configured types are recurring and contribute
-to the nominal event rate. The default period is `1s`.
+The task DSL is `SUB:<type><quantity>[;...][@<period>][#<symbols>]`: `Q`, `T`, `E`, and `S` mean Quote, Trade,
+TradeETH, and Summary. Each type may occur once and quantities must be positive. All configured types are recurring
+and contribute to the nominal event rate. The default period is `1s`. The optional final symbol count expands the
+subscribed instrument universe without changing the number of events published in each batch. It cannot be smaller
+than any configured event quantity.
 
 For example, `SUB:Q375;T375;E375;S375@10ms` publishes 1,500 recurring events every 10 ms (150,000 events/s).
 The common instrument universe contains 375 symbols named `SYM000` through `SYM374`; the numeric width is derived
@@ -93,6 +96,10 @@ client automatically includes `Profile` in its single combined market-event subs
 that subscription and every requested recurring event subscription to contain the complete common universe, then
 publishes one initial Profile for every symbol. The client starts its warm-up only after all unique Profile symbols
 have arrived, so subscription propagation is excluded from the configured warm-up duration.
+
+For example, `SUB:Q375;T375;E375;S375@10ms#3750` still publishes 1,500 events every 10 ms, but subscribes to
+`SYM0000` through `SYM3749` and publishes 3,750 initial Profiles. Every recurring publication advances each event
+type by 375 symbols through this universe. This keeps throughput constant while varying subscription cardinality.
 
 `latency_analyzer` is a standalone post-processing utility and does not connect to dxFeed. It reads a directory of
 latency summaries and captured QD logs, then writes `monitoring.csv` and `monitoring-summary.csv`. Pass
@@ -189,6 +196,19 @@ controlled delay before every market-event callback. `0` disables the delay:
 ```sh
 bash ./tools/run-benchmark.sh --binary-directory ./build \
     --config ./tools/conflation-diagnostic.conf --client-role feed --listener-delay 1ms
+```
+
+`tools/symbol-cardinality.conf` compares 375, 3,750, and 10,000 subscribed symbols while keeping the recurring
+workload at 150,000 events/s:
+
+```powershell
+.\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release `
+    -Config .\tools\symbol-cardinality.conf
+```
+
+```sh
+bash ./tools/run-benchmark.sh --binary-directory ./build \
+    --config ./tools/symbol-cardinality.conf
 ```
 
 Each output prefix includes its repetition, for example `150k-100ms-r02`. The analyzer additionally writes
