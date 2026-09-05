@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -80,10 +81,42 @@ struct Config {
     std::optional<std::chrono::milliseconds> monitoringStat{10s};
     std::filesystem::path output{"latency"};
     ClientRole role{ClientRole::STREAM_FEED};
+    std::int32_t eventsBatchLimit{DXFeedSubscription::OPTIMAL_BATCH_LIMIT};
 };
 
 std::string_view roleName(ClientRole role) {
     return role == ClientRole::FEED ? "feed" : "stream-feed";
+}
+
+std::string eventsBatchLimitName(std::int32_t limit) {
+    if (limit == DXFeedSubscription::OPTIMAL_BATCH_LIMIT) {
+        return "optimal";
+    }
+
+    if (limit == DXFeedSubscription::MAX_BATCH_LIMIT) {
+        return "maximum";
+    }
+
+    return std::to_string(limit);
+}
+
+std::int32_t parseEventsBatchLimit(std::string_view value) {
+    if (value == "optimal" || value == "0") {
+        return DXFeedSubscription::OPTIMAL_BATCH_LIMIT;
+    }
+
+    if (value == "maximum") {
+        return DXFeedSubscription::MAX_BATCH_LIMIT;
+    }
+
+    std::int32_t result{};
+    const auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), result);
+
+    if (error != std::errc{} || ptr != value.data() + value.size() || result <= 0) {
+        throw std::invalid_argument(std::format("invalid events batch limit: {}", value));
+    }
+
+    return result;
 }
 
 Config parseArgs(int argc, char **argv) {
@@ -100,6 +133,7 @@ Config parseArgs(int argc, char **argv) {
   --window 10s             --batch-timeout 30s
   --startup-timeout 30s    initial Profile delivery timeout
   --listener-delay 1ms     delay each market-event callback; default 0
+  --events-batch-limit N   optimal, maximum, or a positive integer; default optimal
   --monitoring-stat 10s    0 disables QD statistics
   --role stream-feed|feed  default stream-feed
   --output PREFIX          default latency
@@ -135,6 +169,8 @@ Config parseArgs(int argc, char **argv) {
             } else {
                 throw std::invalid_argument(std::format("unknown role: {}", value));
             }
+        } else if (arg == "--events-batch-limit") {
+            config.eventsBatchLimit = parseEventsBatchLimit(value);
         } else if (arg == "--listener-delay" && value == "0") {
             config.listenerDelay = 0ms;
         } else {
@@ -208,8 +244,10 @@ class Collector {
     bool acceptingNewBatches_{};
     std::optional<std::int32_t> startBoundarySequence_;
     std::vector<latency::Sample> eventWindow_, batchWindow_;
+    std::vector<std::int64_t> callbackSizeWindow_, callbackDurationWindow_;
     std::array<std::vector<std::int64_t>, EVENT_KINDS.size()> eventGlobalByKind_;
     std::vector<std::int64_t> batchGlobal_;
+    std::vector<std::int64_t> callbackSizeGlobal_, callbackDurationGlobal_;
     std::map<std::int32_t, PendingBatch> pending_;
     std::size_t callbacksWindow_{}, callbacksTotal_{}, negativeWindow_{}, negativeTotal_{};
     std::size_t missingWindow_{}, missingTotal_{};
@@ -412,61 +450,14 @@ class Collector {
         return acceptingNewBatches_ || pending_.contains(sequence);
     }
 
-    public:
-    struct Window {
-        std::vector<latency::Sample> events, batches;
-        std::size_t callbacks{}, negative{}, missing{}, pending{};
-        DeliveryCounters delivery;
-    };
+    void handle(const std::vector<std::shared_ptr<EventType>> &events, bool marketCallback,
+                std::chrono::milliseconds delay) {
+        const auto callbackStart = std::chrono::steady_clock::now();
 
-    struct Totals {
-        std::array<std::vector<std::int64_t>, EVENT_KINDS.size()> eventsByKind;
-        std::vector<std::int64_t> batches;
-        std::size_t callbacks{}, negative{}, missing{}, pending{};
-        std::size_t profilesReceived{};
-        DeliveryCounters delivery;
-    };
-
-    Collector(const latency::TaskPattern &pattern, std::chrono::milliseconds timeout, std::size_t reserveWindowEvents,
-              std::size_t reserveBatches, bool allowConflation)
-        : expectedPerBatch_(pattern.eventCount()), expectedByKind_([&pattern] {
-              std::array<std::size_t, EVENT_KINDS.size()> result{};
-
-              for (const auto kind : EVENT_KINDS) {
-                  result[eventKindIndex(kind)] = pattern.quantity(kind).value_or(0);
-              }
-
-              return result;
-          }()),
-          batchTimeout_(timeout), allowConflation_(allowConflation) {
-        eventWindow_.reserve(reserveWindowEvents);
-        batchWindow_.reserve(32);
-
-        for (const auto kind : EVENT_KINDS) {
-            eventGlobalByKind_[eventKindIndex(kind)].reserve(pattern.quantity(kind).value_or(0) * reserveBatches);
+        if (delay > 0ms) {
+            std::this_thread::sleep_for(delay);
         }
 
-        batchGlobal_.reserve(reserveBatches);
-    }
-
-    void beginMeasurement() {
-        std::lock_guard lock{mutex_};
-        eventWindow_.clear();
-        batchWindow_.clear();
-        pending_.clear();
-        callbacksWindow_ = negativeWindow_ = missingWindow_ = 0;
-        deliveryWindow_ = {};
-        startBoundarySequence_.reset();
-        acceptingNewBatches_ = true;
-        measuring_ = true;
-    }
-
-    void endMeasurement() {
-        std::lock_guard lock{mutex_};
-        acceptingNewBatches_ = false;
-    }
-
-    void handle(const std::vector<std::shared_ptr<EventType>> &events) {
         const auto observed = latency::unixNanosNow();
         std::lock_guard lock{mutex_};
         bool profilesChanged = false;
@@ -543,6 +534,88 @@ class Collector {
                 addEvent(*description->sequence, std::move(pendingEvent));
             }
         }
+
+        if (marketCallback) {
+            const auto duration =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - callbackStart)
+                    .count();
+            const auto size = static_cast<std::int64_t>(events.size());
+
+            callbackSizeWindow_.push_back(size);
+            callbackDurationWindow_.push_back(duration);
+            callbackSizeGlobal_.push_back(size);
+            callbackDurationGlobal_.push_back(duration);
+        }
+    }
+
+    public:
+    struct Window {
+        std::vector<latency::Sample> events, batches;
+        std::vector<std::int64_t> callbackSizes, callbackDurations;
+        std::size_t callbacks{}, negative{}, missing{}, pending{};
+        DeliveryCounters delivery;
+    };
+
+    struct Totals {
+        std::array<std::vector<std::int64_t>, EVENT_KINDS.size()> eventsByKind;
+        std::vector<std::int64_t> batches;
+        std::vector<std::int64_t> callbackSizes, callbackDurations;
+        std::size_t callbacks{}, negative{}, missing{}, pending{};
+        std::size_t profilesReceived{};
+        DeliveryCounters delivery;
+    };
+
+    Collector(const latency::TaskPattern &pattern, std::chrono::milliseconds timeout, std::size_t reserveWindowEvents,
+              std::size_t reserveBatches, bool allowConflation)
+        : expectedPerBatch_(pattern.eventCount()), expectedByKind_([&pattern] {
+              std::array<std::size_t, EVENT_KINDS.size()> result{};
+
+              for (const auto kind : EVENT_KINDS) {
+                  result[eventKindIndex(kind)] = pattern.quantity(kind).value_or(0);
+              }
+
+              return result;
+          }()),
+          batchTimeout_(timeout), allowConflation_(allowConflation) {
+        eventWindow_.reserve(reserveWindowEvents);
+        batchWindow_.reserve(32);
+        callbackSizeWindow_.reserve(reserveBatches);
+        callbackDurationWindow_.reserve(reserveBatches);
+        callbackSizeGlobal_.reserve(reserveBatches);
+        callbackDurationGlobal_.reserve(reserveBatches);
+
+        for (const auto kind : EVENT_KINDS) {
+            eventGlobalByKind_[eventKindIndex(kind)].reserve(pattern.quantity(kind).value_or(0) * reserveBatches);
+        }
+
+        batchGlobal_.reserve(reserveBatches);
+    }
+
+    void beginMeasurement() {
+        std::lock_guard lock{mutex_};
+        eventWindow_.clear();
+        batchWindow_.clear();
+        callbackSizeWindow_.clear();
+        callbackDurationWindow_.clear();
+        pending_.clear();
+        callbacksWindow_ = negativeWindow_ = missingWindow_ = 0;
+        deliveryWindow_ = {};
+        startBoundarySequence_.reset();
+        acceptingNewBatches_ = true;
+        measuring_ = true;
+    }
+
+    void endMeasurement() {
+        std::lock_guard lock{mutex_};
+        acceptingNewBatches_ = false;
+    }
+
+    void handle(const std::vector<std::shared_ptr<EventType>> &events) {
+        handle(events, false, 0ms);
+    }
+
+    void handleMarket(const std::vector<std::shared_ptr<EventType>> &events, std::chrono::milliseconds delay) {
+        handle(events, true, delay);
     }
 
     Window takeWindow(bool expireAll = false) {
@@ -570,10 +643,19 @@ class Collector {
             }
         }
 
-        Window result{std::move(eventWindow_), std::move(batchWindow_), callbacksWindow_, negativeWindow_,
-                      missingWindow_,          pending_.size(),         deliveryWindow_};
+        Window result{std::move(eventWindow_),
+                      std::move(batchWindow_),
+                      std::move(callbackSizeWindow_),
+                      std::move(callbackDurationWindow_),
+                      callbacksWindow_,
+                      negativeWindow_,
+                      missingWindow_,
+                      pending_.size(),
+                      deliveryWindow_};
         eventWindow_.clear();
         batchWindow_.clear();
+        callbackSizeWindow_.clear();
+        callbackDurationWindow_.clear();
         callbacksWindow_ = negativeWindow_ = missingWindow_ = 0;
         deliveryWindow_ = {};
 
@@ -583,14 +665,9 @@ class Collector {
     Totals totals() const {
         std::lock_guard lock{mutex_};
 
-        return Totals{eventGlobalByKind_,
-                      batchGlobal_,
-                      callbacksTotal_,
-                      negativeTotal_,
-                      missingTotal_,
-                      pending_.size(),
-                      profileSymbolsReceived_.size(),
-                      deliveryTotal_};
+        return Totals{
+            eventGlobalByKind_, batchGlobal_,  callbackSizeGlobal_, callbackDurationGlobal_,        callbacksTotal_,
+            negativeTotal_,     missingTotal_, pending_.size(),     profileSymbolsReceived_.size(), deliveryTotal_};
     }
 
     bool waitForProfiles(std::size_t expected, std::chrono::milliseconds timeout) {
@@ -631,7 +708,7 @@ class Collector {
 
 // Writes per-window and whole-run statistics while retaining detailed rows only for outliers.
 class Reporter {
-    std::ofstream summary_, outliers_;
+    std::ofstream summary_, outliers_, callbacks_;
     std::int64_t runStart_{};
     std::size_t expectedEventsPerBatch_{};
     std::int64_t publishPeriodMs_{};
@@ -640,6 +717,7 @@ class Reporter {
     std::size_t initialProfilesExpected_{};
     std::size_t windowIndex_{};
     std::string endpointRole_;
+    std::string eventsBatchLimit_;
 
     struct DeliveryView {
         std::size_t published{}, delivered{}, listenerDeficit{}, excess{};
@@ -732,8 +810,8 @@ class Reporter {
 
         summary_ << latency::utcTimestamp(start) << ',' << latency::utcTimestamp(end) << ',' << kind << ',' << s.count
                  << ',' << expectedPerBatch << ',' << publishPeriodMs_ << ',' << nominalEventsPerSecond_ << ','
-                 << endpointRole_ << ',' << delivery.published << ',' << delivery.delivered << ','
-                 << delivery.listenerDeficit << ',' << listenerCoverage << ',' << delivery.excess << ','
+                 << endpointRole_ << ',' << eventsBatchLimit_ << ',' << delivery.published << ',' << delivery.delivered
+                 << ',' << delivery.listenerDeficit << ',' << listenerCoverage << ',' << delivery.excess << ','
                  << delivery.fullPublications << ',' << delivery.partialPublications << ','
                  << delivery.emptyPublications << ',' << delivery.uncorrelatedEvents << ',' << callbacks << ','
                  << negative << ',' << missing << ',' << pending << ',' << microseconds(s.minimum) << ','
@@ -741,6 +819,20 @@ class Reporter {
                  << microseconds(s.p95) << ',' << microseconds(s.p99) << ',' << microseconds(s.p999) << ','
                  << microseconds(s.maximum) << ',' << microseconds(s.q1) << ',' << microseconds(s.q3) << ','
                  << microseconds(s.iqr) << ',' << microseconds(s.outlierThreshold) << ',' << s.outlierCount << '\n';
+    }
+
+    void writeCallbackSummary(std::int64_t start, std::int64_t end, std::string_view kind, std::string_view unit,
+                              const latency::Statistics &statistics, double divisor = 1.0) {
+        const auto value = [divisor](double current) {
+            return current / divisor;
+        };
+
+        callbacks_ << latency::utcTimestamp(start) << ',' << latency::utcTimestamp(end) << ',' << kind << ',' << unit
+                   << ',' << statistics.count << ',' << value(statistics.minimum) << ',' << value(statistics.mean)
+                   << ',' << value(statistics.p50) << ',' << value(statistics.p90) << ',' << value(statistics.p95)
+                   << ',' << value(statistics.p99) << ',' << value(statistics.p999) << ',' << value(statistics.maximum)
+                   << ',' << value(statistics.q1) << ',' << value(statistics.q3) << ',' << value(statistics.iqr) << ','
+                   << value(statistics.outlierThreshold) << ',' << statistics.outlierCount << '\n';
     }
 
     void writeOutliers(const std::vector<latency::Sample> &samples, std::string_view kind,
@@ -761,10 +853,12 @@ class Reporter {
 
     public:
     // Opens both reports together so a run cannot proceed with only one of its outputs available.
-    Reporter(const std::filesystem::path &prefix, const latency::TaskPattern &pattern, ClientRole role)
+    Reporter(const std::filesystem::path &prefix, const latency::TaskPattern &pattern, ClientRole role,
+             std::int32_t eventsBatchLimit)
         : runStart_(latency::unixNanosNow()), expectedEventsPerBatch_(pattern.eventCount()),
           publishPeriodMs_(pattern.publishPeriod.count()), nominalEventsPerSecond_(pattern.nominalEventsPerSecond()),
-          initialProfilesExpected_(pattern.symbolCount()), endpointRole_(roleName(role)) {
+          initialProfilesExpected_(pattern.symbolCount()), endpointRole_(roleName(role)),
+          eventsBatchLimit_(eventsBatchLimitName(eventsBatchLimit)) {
         for (const auto kind : EVENT_KINDS) {
             expectedEventsByKind_[eventKindIndex(kind)] = pattern.quantity(kind).value_or(0);
         }
@@ -773,6 +867,8 @@ class Reporter {
         summaryPath += "-summary.csv";
         auto outliersPath = prefix;
         outliersPath += "-outliers.csv";
+        auto callbacksPath = prefix;
+        callbacksPath += "-callbacks.csv";
 
         if (summaryPath.has_parent_path()) {
             std::filesystem::create_directories(summaryPath.parent_path());
@@ -780,13 +876,15 @@ class Reporter {
 
         summary_.open(summaryPath);
         outliers_.open(outliersPath);
+        callbacks_.open(callbacksPath);
 
-        if (!summary_ || !outliers_) {
+        if (!summary_ || !outliers_ || !callbacks_) {
             throw std::runtime_error("cannot open output CSV files");
         }
 
         summary_ << "window_start_utc,window_end_utc,sample_kind,samples,expected_per_batch,publish_period_ms,"
-                    "nominal_events_per_second,endpoint_role,published,delivered,listener_deficit,listener_coverage,"
+                    "nominal_events_per_second,endpoint_role,events_batch_limit,published,delivered,listener_deficit,"
+                    "listener_coverage,"
                     "excess_events,full_publications,partial_publications,empty_publications,uncorrelated_events,"
                     "callbacks,"
                     "clock_anomalies,missing_batches,pending_batches,min_us,"
@@ -794,7 +892,10 @@ class Reporter {
                     "q3_us,iqr_us,"
                     "outlier_threshold_us,outliers\n";
         outliers_ << "observed_at_utc,sample_kind,event_type,symbol,publish_time_ns,latency_ns,window_threshold_ns\n";
-        std::cout << "Writing " << summaryPath << " and " << outliersPath << '\n';
+        callbacks_ << "window_start_utc,window_end_utc,sample_kind,unit,samples,min,mean,p50,p90,p95,p99,p999,max,"
+                      "q1,q3,iqr,outlier_threshold,outliers\n";
+        std::cout << std::format("Writing {}, {}, and {}\n", summaryPath.string(), outliersPath.string(),
+                                 callbacksPath.string());
     }
 
     void beginMeasurement(std::int64_t start) {
@@ -805,6 +906,8 @@ class Reporter {
         ++windowIndex_;
         const auto eventStats = latency::calculateStatistics(latencies(data.events));
         const auto batchStats = latency::calculateStatistics(latencies(data.batches));
+        const auto callbackSizeStats = latency::calculateStatistics(std::move(data.callbackSizes));
+        const auto callbackDurationStats = latency::calculateStatistics(std::move(data.callbackDurations));
 
         const auto delivery = deliveryView(data.delivery);
         const auto listenerCoveragePercent =
@@ -837,13 +940,18 @@ class Reporter {
         writeSummary(start, end, "batch", batchStats, 1, data.callbacks, data.negative, data.missing, data.pending,
                      deliveryView(data.delivery));
         writeOutliers(data.batches, "batch", batchStats);
+        writeCallbackSummary(start, end, "market-callback-size", "events", callbackSizeStats);
+        writeCallbackSummary(start, end, "market-callback-duration", "us", callbackDurationStats, 1'000.0);
         summary_.flush();
         outliers_.flush();
+        callbacks_.flush();
     }
 
     void final(const Collector::Totals &totals, std::int64_t end) {
         const auto eventStats = latency::calculateStatistics(combinedLatencies(totals.eventsByKind));
         const auto batchStats = latency::calculateStatistics(totals.batches);
+        const auto callbackSizeStats = latency::calculateStatistics(totals.callbackSizes);
+        const auto callbackDurationStats = latency::calculateStatistics(totals.callbackDurations);
         const auto delivery = deliveryView(totals.delivery);
         const auto listenerCoveragePercent =
             delivery.published ? static_cast<double>(delivery.delivered) * 100.0 / delivery.published : 0.0;
@@ -873,6 +981,8 @@ class Reporter {
         printStats("batch", batchStats);
         writeSummary(runStart_, end, "batch-total", batchStats, 1, totals.callbacks, totals.negative, totals.missing,
                      totals.pending, deliveryView(totals.delivery));
+        writeCallbackSummary(runStart_, end, "market-callback-size-total", "events", callbackSizeStats);
+        writeCallbackSummary(runStart_, end, "market-callback-duration-total", "us", callbackDurationStats, 1'000.0);
         std::cout << std::format("Initial Profile events received={}/{}\n", totals.profilesReceived,
                                  initialProfilesExpected_);
     }
@@ -906,7 +1016,7 @@ int main(int argc, char **argv) {
         const auto runBatches = std::max<std::size_t>(1, pattern->batchCount(config.duration));
         Collector collector{*pattern, config.batchTimeout, expected * windowBatches, runBatches,
                             config.role == ClientRole::FEED};
-        Reporter reporter{config.output, *pattern, config.role};
+        Reporter reporter{config.output, *pattern, config.role, config.eventsBatchLimit};
 
         configureMonitoring(config.monitoringStat);
         const auto endpointRole =
@@ -926,12 +1036,9 @@ int main(int argc, char **argv) {
         eventTypes.push_back(Profile::TYPE);
 
         auto subscription = feed->createSubscription(eventTypes);
+        subscription->setEventsBatchLimit(config.eventsBatchLimit);
         subscription->addEventListener([&collector, delay = config.listenerDelay](const auto &events) {
-            if (delay > 0ms) {
-                std::this_thread::sleep_for(delay);
-            }
-
-            collector.handle(events);
+            collector.handleMarket(events, delay);
         });
         subscription->addSymbols(pattern->symbols());
         auto control = feed->createSubscription(TextMessage::TYPE);
@@ -941,11 +1048,12 @@ int main(int argc, char **argv) {
         control->addSymbols(config.task);
         endpoint->connect(config.address);
         std::cout << std::format("Connected to {} using {}, task {}, expected {} events/batch every {} ms "
-                                 "(nominal {:.3f} events/s), listener delay {} ms. Waiting for {} initial Profile "
-                                 "events.\n",
+                                 "(nominal {:.3f} events/s), listener delay {} ms, events batch limit {}. Waiting "
+                                 "for {} initial Profile events.\n",
                                  config.address, roleName(config.role), config.task, expected,
                                  pattern->publishPeriod.count(), pattern->nominalEventsPerSecond(),
-                                 config.listenerDelay.count(), pattern->symbolCount())
+                                 config.listenerDelay.count(),
+                                 eventsBatchLimitName(subscription->getEventsBatchLimit()), pattern->symbolCount())
                   << std::flush;
 
         if (!collector.waitForProfiles(pattern->symbolCount(), config.startupTimeout)) {

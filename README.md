@@ -79,6 +79,7 @@ interval. Its main options are:
 | `--batch-timeout` | `30s` | Maximum wait for an incomplete marker/event batch. |
 | `--startup-timeout` | `30s` | Maximum wait for all unique initial Profile symbols before warm-up. |
 | `--listener-delay` | `0` | Artificial delay at the start of each market-event callback. |
+| `--events-batch-limit` | `optimal` | Maximum market events per native notification: `optimal`, `maximum`, or a positive integer. |
 | `--monitoring-stat` | `10s` | QD statistics period; `0` disables it. |
 | `--role` | `stream-feed` | Endpoint role: `stream-feed` preserves updates; `feed` permits conflation. |
 | `--output` | `latency` | Path and filename prefix for generated CSV files. |
@@ -122,8 +123,10 @@ Then start the client in another terminal:
 ```
 
 Append `.exe` and use `build/Release/` for a Visual Studio build. By default, the client performs a 30-second warm-up
-followed by a five-minute measurement divided into 10-second windows. It writes `<prefix>-summary.csv` and
-`<prefix>-outliers.csv`; use `--output <prefix>` to choose their location and basename.
+followed by a five-minute measurement divided into 10-second windows. It writes `<prefix>-summary.csv`,
+`<prefix>-callbacks.csv`, and `<prefix>-outliers.csv`; use `--output <prefix>` to choose their location and basename.
+The callback report contains per-window and whole-run distributions for the number of events in each market-event
+notification and the time spent in its user callback.
 
 Both processes default `monitoring.stat` to `10s`, making QD print internal endpoint statistics every 10 seconds.
 Pass `--monitoring-stat 0` to disable the reports or provide another positive duration. Redirect stdout and stderr
@@ -168,6 +171,11 @@ Both launchers read `tools/benchmark-suite.conf`, including the independent `STA
 `--config` to use a modified suite. Results are
 written below `benchmark-results/<UTC timestamp>/`. A full default run takes approximately two hours and twenty
 minutes plus any machine-dependent startup overhead.
+
+A `PROFILE` line may override the endpoint role and events batch limit for that profile using
+`PROFILE=name|task|client-role|events-batch-limit`. Omitted fields inherit `CLIENT_ROLE` and `EVENTS_BATCH_LIMIT`
+from the suite; the latter defaults to `optimal`. Command-line `-EventsBatchLimit`/`--events-batch-limit` provides a
+suite-wide override for profiles that do not specify one.
 
 For a short contract A/B, run `tools/conflation-diagnostic.conf` once with the default `feed` role and once with a
 `stream-feed` override. The task, symbol set, cadence, warm-up, and measurement duration remain identical:
@@ -238,6 +246,20 @@ and included in the reported server preparation time:
 ```sh
 bash ./tools/run-benchmark.sh --binary-directory ./build \
     --config ./tools/event-order-shuffle.conf
+```
+
+`tools/events-batch-limit.conf` compares native notification limits while holding the shuffled 375-symbol workload
+at 150,000 events/s. It includes `optimal`, `1`, `375`, `1500`, and `maximum` FEED profiles plus a STREAM_FEED
+control. Limit `1` is intentionally a callback-overhead stress case:
+
+```powershell
+.\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release `
+    -Config .\tools\events-batch-limit.conf
+```
+
+```sh
+bash ./tools/run-benchmark.sh --binary-directory ./build \
+    --config ./tools/events-batch-limit.conf
 ```
 
 Each output prefix includes its repetition, for example `150k-100ms-r02`. The analyzer additionally writes

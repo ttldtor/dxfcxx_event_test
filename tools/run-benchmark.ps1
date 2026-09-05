@@ -6,6 +6,7 @@ param(
     [ValidateSet("", "feed", "stream-feed")]
     [string]$ClientRole = "",
     [string]$ListenerDelay = "",
+    [string]$EventsBatchLimit = "",
     [switch]$DryRun
 )
 
@@ -21,9 +22,14 @@ function Read-SuiteConfig([string]$Path) {
         $parts = $line.Split("=", 2)
         if ($parts.Count -ne 2) { throw "Invalid suite configuration line: $rawLine" }
         if ($parts[0] -eq "PROFILE") {
-            $profile = $parts[1].Split("|", 2)
-            if ($profile.Count -ne 2) { throw "Invalid PROFILE line: $rawLine" }
-            $profiles.Add([pscustomobject]@{ Name = $profile[0]; Task = $profile[1] })
+            $profile = $parts[1] -split '\|', 4
+            if ($profile.Count -lt 2) { throw "Invalid PROFILE line: $rawLine" }
+            $profiles.Add([pscustomobject]@{
+                Name = $profile[0]
+                Task = $profile[1]
+                ClientRole = if ($profile.Count -ge 3) { $profile[2] } else { "" }
+                EventsBatchLimit = if ($profile.Count -ge 4) { $profile[3] } else { "" }
+            })
         } else {
             $settings[$parts[0]] = $parts[1]
         }
@@ -59,6 +65,13 @@ $listenerDelay = if ($ListenerDelay) {
 } else {
     "0"
 }
+$eventsBatchLimit = if ($EventsBatchLimit) {
+    $EventsBatchLimit
+} elseif ($settings.ContainsKey("EVENTS_BATCH_LIMIT")) {
+    $settings.EVENTS_BATCH_LIMIT
+} else {
+    "optimal"
+}
 
 if ($repetitions -le 0) { throw "REPETITIONS must be positive" }
 
@@ -67,7 +80,13 @@ if ($DryRun) {
         for ($position = 0; $position -lt $suite.Profiles.Count; ++$position) {
             $profile = $suite.Profiles[($position + $repetition - 1) % $suite.Profiles.Count]
             $prefix = "{0}-r{1:d2}" -f $profile.Name, $repetition
-            Write-Output "$prefix : $($profile.Task) ; role=$clientRole listener-delay=$listenerDelay startup-timeout=$($settings.STARTUP_TIMEOUT) warmup=$($settings.WARMUP) duration=$($settings.DURATION)"
+            $effectiveRole = if ($profile.ClientRole) { $profile.ClientRole } else { $clientRole }
+            $effectiveBatchLimit = if ($profile.EventsBatchLimit) {
+                $profile.EventsBatchLimit
+            } else {
+                $eventsBatchLimit
+            }
+            Write-Output "$prefix : $($profile.Task) ; role=$effectiveRole events-batch-limit=$effectiveBatchLimit listener-delay=$listenerDelay startup-timeout=$($settings.STARTUP_TIMEOUT) warmup=$($settings.WARMUP) duration=$($settings.DURATION)"
         }
     }
     Write-Output "Analyzer: $analyzerBinary --monitoring-period $($settings.MONITORING_PERIOD)"
@@ -80,7 +99,8 @@ New-Item -ItemType Directory -Force -Path $runDirectory | Out-Null
 $runDirectory = (Resolve-Path -LiteralPath $runDirectory).Path
 Copy-Item -LiteralPath $Config -Destination (Join-Path $runDirectory "suite.conf")
 $manifest = Join-Path $runDirectory "run-manifest.csv"
-'profile,repetition,task,status,client_exit_code' | Set-Content -LiteralPath $manifest -Encoding utf8
+'profile,repetition,task,client_role,events_batch_limit,status,client_exit_code' |
+    Set-Content -LiteralPath $manifest -Encoding utf8
 
 @(
     "started_utc=$([DateTime]::UtcNow.ToString('o'))"
@@ -92,6 +112,7 @@ $manifest = Join-Path $runDirectory "run-manifest.csv"
     "suite_config=$((Resolve-Path -LiteralPath $Config).Path)"
     "client_role=$clientRole"
     "listener_delay=$listenerDelay"
+    "events_batch_limit=$eventsBatchLimit"
 ) | Set-Content -LiteralPath (Join-Path $runDirectory "environment.txt") -Encoding utf8
 
 $failed = $false
@@ -99,6 +120,12 @@ for ($repetition = 1; $repetition -le $repetitions; ++$repetition) {
     for ($position = 0; $position -lt $suite.Profiles.Count; ++$position) {
         $profile = $suite.Profiles[($position + $repetition - 1) % $suite.Profiles.Count]
         $prefix = "{0}-r{1:d2}" -f $profile.Name, $repetition
+        $effectiveRole = if ($profile.ClientRole) { $profile.ClientRole } else { $clientRole }
+        $effectiveBatchLimit = if ($profile.EventsBatchLimit) {
+            $profile.EventsBatchLimit
+        } else {
+            $eventsBatchLimit
+        }
         $outputPrefix = Join-Path $runDirectory $prefix
         $serverOut = "$outputPrefix-server.stdout.log"
         $serverErr = "$outputPrefix-server.stderr.log"
@@ -126,8 +153,9 @@ for ($repetition = 1; $repetition -le $repetitions; ++$repetition) {
             if (-not $ready) { throw "Latency server did not become ready" }
 
             & $clientBinary --address $settings.ADDRESS --task $profile.Task `
-                --role $clientRole `
+                --role $effectiveRole `
                 --listener-delay $listenerDelay `
+                --events-batch-limit $effectiveBatchLimit `
                 --warmup $settings.WARMUP --duration $settings.DURATION --window $settings.WINDOW `
                 --batch-timeout $settings.BATCH_TIMEOUT --startup-timeout $settings.STARTUP_TIMEOUT `
                 --monitoring-stat $settings.MONITORING_PERIOD `
@@ -158,7 +186,8 @@ for ($repetition = 1; $repetition -le $repetitions; ++$repetition) {
             Remove-Item -LiteralPath $serverOut, $serverErr -Force -ErrorAction SilentlyContinue
         }
 
-        '"{0}",{1},"{2}",{3},{4}' -f $profile.Name, $repetition, $profile.Task, $status, $clientExit |
+        '"{0}",{1},"{2}",{3},{4},{5},{6}' -f $profile.Name, $repetition, $profile.Task, $effectiveRole,
+            $effectiveBatchLimit, $status, $clientExit |
             Add-Content -LiteralPath $manifest -Encoding utf8
         if (-not ($repetition -eq $repetitions -and $position -eq $suite.Profiles.Count - 1)) {
             Start-Sleep -Seconds ([int]$settings.COOLDOWN_SECONDS)

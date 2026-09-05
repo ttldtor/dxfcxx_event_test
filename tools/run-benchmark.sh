@@ -7,6 +7,7 @@ output_root="benchmark-results"
 config="$script_dir/benchmark-suite.conf"
 client_role_override=""
 listener_delay_override=""
+events_batch_limit_override=""
 dry_run=false
 
 while (($#)); do
@@ -16,6 +17,7 @@ while (($#)); do
         --config) config=$2; shift 2 ;;
         --client-role) client_role_override=$2; shift 2 ;;
         --listener-delay) listener_delay_override=$2; shift 2 ;;
+        --events-batch-limit) events_batch_limit_override=$2; shift 2 ;;
         --dry-run) dry_run=true; shift ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -31,11 +33,14 @@ startup_timeout=""
 monitoring_period=""
 client_role=""
 listener_delay="0"
+events_batch_limit="optimal"
 cooldown_seconds=""
 address=""
 listen_address=""
 profile_names=()
 profile_tasks=()
+profile_roles=()
+profile_batch_limits=()
 while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     line="${raw_line%$'\r'}"
     [[ -z "$line" || "$line" == \#* ]] && continue
@@ -44,8 +49,12 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     [[ "$key" != "$line" ]] || { echo "Invalid suite configuration line: $line" >&2; exit 2; }
     if [[ "$key" == PROFILE ]]; then
         [[ "$value" == *'|'* ]] || { echo "Invalid PROFILE line: $line" >&2; exit 2; }
-        profile_names+=("${value%%|*}")
-        profile_tasks+=("${value#*|}")
+        IFS='|' read -r profile_name profile_task profile_role profile_batch_limit profile_extra <<< "$value"
+        [[ -z "$profile_extra" ]] || { echo "Invalid PROFILE line: $line" >&2; exit 2; }
+        profile_names+=("$profile_name")
+        profile_tasks+=("$profile_task")
+        profile_roles+=("$profile_role")
+        profile_batch_limits+=("$profile_batch_limit")
     else
         case "$key" in
             REPETITIONS) repetitions=$value ;;
@@ -57,6 +66,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
             MONITORING_PERIOD) monitoring_period=$value ;;
             CLIENT_ROLE) client_role=$value ;;
             LISTENER_DELAY) listener_delay=$value ;;
+            EVENTS_BATCH_LIMIT) events_batch_limit=$value ;;
             COOLDOWN_SECONDS) cooldown_seconds=$value ;;
             ADDRESS) address=$value ;;
             LISTEN_ADDRESS) listen_address=$value ;;
@@ -67,6 +77,7 @@ done < "$config"
 
 [[ -n "$client_role_override" ]] && client_role=$client_role_override
 [[ -n "$listener_delay_override" ]] && listener_delay=$listener_delay_override
+[[ -n "$events_batch_limit_override" ]] && events_batch_limit=$events_batch_limit_override
 
 [[ -n "$repetitions" ]] || { echo "Missing REPETITIONS in $config" >&2; exit 2; }
 [[ -n "$warmup" ]] || { echo "Missing WARMUP in $config" >&2; exit 2; }
@@ -98,9 +109,11 @@ if $dry_run; then
     for ((repetition=1; repetition<=repetitions; ++repetition)); do
         for ((position=0; position<${#profile_names[@]}; ++position)); do
             index=$(((position + repetition - 1) % ${#profile_names[@]}))
-            printf '%s-r%02d : %s ; role=%s listener-delay=%s startup-timeout=%s warmup=%s duration=%s\n' \
-                "${profile_names[$index]}" "$repetition" "${profile_tasks[$index]}" "$client_role" \
-                "$listener_delay" "$startup_timeout" "$warmup" "$duration"
+            effective_role=${profile_roles[$index]:-$client_role}
+            effective_batch_limit=${profile_batch_limits[$index]:-$events_batch_limit}
+            printf '%s-r%02d : %s ; role=%s events-batch-limit=%s listener-delay=%s startup-timeout=%s warmup=%s duration=%s\n' \
+                "${profile_names[$index]}" "$repetition" "${profile_tasks[$index]}" "$effective_role" \
+                "$effective_batch_limit" "$listener_delay" "$startup_timeout" "$warmup" "$duration"
         done
     done
     printf 'Analyzer: %s --monitoring-period %s\n' "$analyzer_binary" "$monitoring_period"
@@ -113,7 +126,7 @@ mkdir -p "$run_directory"
 run_directory="$(cd "$run_directory" && pwd)"
 cp "$config" "$run_directory/suite.conf"
 manifest="$run_directory/run-manifest.csv"
-printf '%s\n' 'profile,repetition,task,status,client_exit_code' > "$manifest"
+printf '%s\n' 'profile,repetition,task,client_role,events_batch_limit,status,client_exit_code' > "$manifest"
 {
     printf 'started_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'git_commit=%s\n' "$(git rev-parse HEAD 2>/dev/null || true)"
@@ -123,6 +136,7 @@ printf '%s\n' 'profile,repetition,task,status,client_exit_code' > "$manifest"
     printf 'suite_config=%s\n' "$(cd "$(dirname "$config")" && pwd)/$(basename "$config")"
     printf 'client_role=%s\n' "$client_role"
     printf 'listener_delay=%s\n' "$listener_delay"
+    printf 'events_batch_limit=%s\n' "$events_batch_limit"
 } > "$run_directory/environment.txt"
 
 server_pid=""
@@ -142,6 +156,8 @@ for ((repetition=1; repetition<=repetitions; ++repetition)); do
         index=$(((position + repetition - 1) % ${#profile_names[@]}))
         profile=${profile_names[$index]}
         task=${profile_tasks[$index]}
+        effective_role=${profile_roles[$index]:-$client_role}
+        effective_batch_limit=${profile_batch_limits[$index]:-$events_batch_limit}
         printf -v prefix '%s-r%02d' "$profile" "$repetition"
         output_prefix="$run_directory/$prefix"
         server_log="$output_prefix-server.log"
@@ -161,8 +177,9 @@ for ((repetition=1; repetition<=repetitions; ++repetition)); do
         client_exit=-1
         if $ready; then
             "$client_binary" --address "$address" --task "$task" \
-                --role "$client_role" \
+                --role "$effective_role" \
                 --listener-delay "$listener_delay" \
+                --events-batch-limit "$effective_batch_limit" \
                 --warmup "$warmup" --duration "$duration" \
                 --window "$window" --batch-timeout "$batch_timeout" \
                 --startup-timeout "$startup_timeout" \
@@ -186,7 +203,8 @@ for ((repetition=1; repetition<=repetitions; ++repetition)); do
             [[ -f "$output_prefix-summary.csv" ]] && mv "$output_prefix-summary.csv" "$output_prefix-summary.partial.csv"
             [[ -f "$output_prefix-outliers.csv" ]] && mv "$output_prefix-outliers.csv" "$output_prefix-outliers.partial.csv"
         fi
-        printf '"%s",%d,"%s",%s,%d\n' "$profile" "$repetition" "$task" "$status" "$client_exit" >> "$manifest"
+        printf '"%s",%d,"%s",%s,%s,%s,%d\n' "$profile" "$repetition" "$task" "$effective_role" \
+            "$effective_batch_limit" "$status" "$client_exit" >> "$manifest"
         if ! ((repetition == repetitions && position == ${#profile_names[@]} - 1)); then
             sleep "$cooldown_seconds"
         fi

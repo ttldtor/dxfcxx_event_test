@@ -1,0 +1,10 @@
+started_utc=2026-09-05T21:02:42.3293363Z
+git_commit=c8771378055bf85bb2b4c0a1f90e4978931b730a
+os=Microsoft Windows 10.0.26340
+architecture=X64
+processor_count=32
+binary_directory=C:\w\!active\dxfcxx_event_test\cmake-build-release-visual-studio-2026
+suite_config=C:\w\!active\dxfcxx_event_test\tools\events-batch-limit.conf
+client_role=feed
+listener_delay=0
+events_batch_limit=optimal
