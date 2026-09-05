@@ -1,0 +1,8 @@
+started_utc=2026-09-05T18:14:26.6672435Z
+git_commit=bd6ca2cfd6466295273c45ebe61c60fff7973e54
+os=Microsoft Windows 10.0.26340
+architecture=X64
+processor_count=32
+binary_directory=C:\w\!active\dxfcxx_event_test\cmake-build-agent\Release
+suite_config=C:\w\!active\dxfcxx_event_test\tools\conflation-diagnostic.conf
+client_role=stream-feed

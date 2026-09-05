@@ -207,6 +207,7 @@ TEST_CASE("repeated benchmark comparison files") {
     CHECK(reportText.contains("| Scenario | Write records/s | Write lag | CPU | Maximum buffer | Maximum dropped |"));
     CHECK(reportText.contains("`Dropped = 0` rules out drops counted by the corresponding QD endpoint"));
     CHECK(reportText.contains("cannot locate TICKER supersession on the publisher or feed side"));
+    CHECK_FALSE(reportText.contains("| n/a |"));
 }
 
 TEST_CASE("invalid monitoring inputs are rejected") {

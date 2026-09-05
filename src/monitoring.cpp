@@ -1073,6 +1073,13 @@ listener coverage.
 
         return found == monitoringComparisons.end() ? RunComparison{} : found->comparison;
     };
+    const auto medianText = [](const RunComparison &value, double divisor = 1.0,
+                               std::string_view suffix = std::string_view{}) {
+        return value.runs ? std::format("{:.3f}{}", value.median / divisor, suffix) : std::string{"n/a"};
+    };
+    const auto maximumText = [](const RunComparison &value) {
+        return value.runs ? std::format("{:.3f}", value.maximum) : std::string{"n/a"};
+    };
 
     for (const auto &[scenario, rows] : scenarios) {
         const auto readRate = monitoringValue(scenario, "client", "read_data_rps_run_mean");
@@ -1080,8 +1087,8 @@ listener coverage.
         const auto cpu = monitoringValue(scenario, "client", "cpu_percent_run_mean");
         const auto buffer = monitoringValue(scenario, "client", "buffer_run_max");
         const auto dropped = monitoringValue(scenario, "client", "dropped_run_sum");
-        report << "| " << scenario << " | " << readRate.median << " | " << readLag.median / 1000.0 << " | "
-               << cpu.median << "% | " << buffer.maximum << " | " << dropped.maximum << " |\n";
+        report << "| " << scenario << " | " << medianText(readRate) << " | " << medianText(readLag, 1000.0) << " | "
+               << medianText(cpu, 1.0, "%") << " | " << maximumText(buffer) << " | " << maximumText(dropped) << " |\n";
     }
 
     report << R"(
@@ -1100,8 +1107,8 @@ The table shows medians across repetitions. Lag is in milliseconds; dropped is t
         const auto cpu = monitoringValue(scenario, "server", "cpu_percent_run_mean");
         const auto buffer = monitoringValue(scenario, "server", "buffer_run_max");
         const auto dropped = monitoringValue(scenario, "server", "dropped_run_sum");
-        report << "| " << scenario << " | " << writeRate.median << " | " << writeLag.median / 1000.0 << " | "
-               << cpu.median << "% | " << buffer.maximum << " | " << dropped.maximum << " |\n";
+        report << "| " << scenario << " | " << medianText(writeRate) << " | " << medianText(writeLag, 1000.0) << " | "
+               << medianText(cpu, 1.0, "%") << " | " << maximumText(buffer) << " | " << maximumText(dropped) << " |\n";
     }
 
     report << R"(

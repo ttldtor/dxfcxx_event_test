@@ -76,6 +76,7 @@ struct Config {
     std::string address{"127.0.0.1:7400"};
     std::string task{"SUB:Q100"};
     std::chrono::milliseconds warmup{30s}, duration{5min}, window{10s}, batchTimeout{30s}, startupTimeout{30s};
+    std::chrono::milliseconds listenerDelay{};
     std::optional<std::chrono::milliseconds> monitoringStat{10s};
     std::filesystem::path output{"latency"};
     ClientRole role{ClientRole::STREAM_FEED};
@@ -98,6 +99,7 @@ Config parseArgs(int argc, char **argv) {
   --warmup 30s             --duration 5m
   --window 10s             --batch-timeout 30s
   --startup-timeout 30s    initial Profile delivery timeout
+  --listener-delay 1ms     delay each market-event callback; default 0
   --monitoring-stat 10s    0 disables QD statistics
   --role stream-feed|feed  default stream-feed
   --output PREFIX          default latency
@@ -133,6 +135,8 @@ Config parseArgs(int argc, char **argv) {
             } else {
                 throw std::invalid_argument(std::format("unknown role: {}", value));
             }
+        } else if (arg == "--listener-delay" && value == "0") {
+            config.listenerDelay = 0ms;
         } else {
             auto duration = latency::parseDuration(value);
 
@@ -150,6 +154,8 @@ Config parseArgs(int argc, char **argv) {
                 config.batchTimeout = *duration;
             } else if (arg == "--startup-timeout") {
                 config.startupTimeout = *duration;
+            } else if (arg == "--listener-delay") {
+                config.listenerDelay = *duration;
             } else {
                 throw std::invalid_argument(std::format("unknown argument: {}", arg));
             }
@@ -920,7 +926,11 @@ int main(int argc, char **argv) {
         eventTypes.push_back(Profile::TYPE);
 
         auto subscription = feed->createSubscription(eventTypes);
-        subscription->addEventListener([&collector](const auto &events) {
+        subscription->addEventListener([&collector, delay = config.listenerDelay](const auto &events) {
+            if (delay > 0ms) {
+                std::this_thread::sleep_for(delay);
+            }
+
             collector.handle(events);
         });
         subscription->addSymbols(pattern->symbols());
@@ -931,10 +941,11 @@ int main(int argc, char **argv) {
         control->addSymbols(config.task);
         endpoint->connect(config.address);
         std::cout << std::format("Connected to {} using {}, task {}, expected {} events/batch every {} ms "
-                                 "(nominal {:.3f} events/s). Waiting for {} initial Profile events.\n",
+                                 "(nominal {:.3f} events/s), listener delay {} ms. Waiting for {} initial Profile "
+                                 "events.\n",
                                  config.address, roleName(config.role), config.task, expected,
                                  pattern->publishPeriod.count(), pattern->nominalEventsPerSecond(),
-                                 pattern->symbolCount())
+                                 config.listenerDelay.count(), pattern->symbolCount())
                   << std::flush;
 
         if (!collector.waitForProfiles(pattern->symbolCount(), config.startupTimeout)) {

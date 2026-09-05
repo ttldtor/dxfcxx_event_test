@@ -161,6 +161,36 @@ Both launchers read `tools/benchmark-suite.conf`, including the independent `STA
 written below `benchmark-results/<UTC timestamp>/`. A full default run takes approximately two hours and twenty
 minutes plus any machine-dependent startup overhead.
 
+For a short contract A/B, run `tools/conflation-diagnostic.conf` once with the default `feed` role and once with a
+`stream-feed` override. The task, symbol set, cadence, warm-up, and measurement duration remain identical:
+
+```powershell
+.\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release `
+    -Config .\tools\conflation-diagnostic.conf -ClientRole feed
+.\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release `
+    -Config .\tools\conflation-diagnostic.conf -ClientRole stream-feed
+```
+
+```sh
+bash ./tools/run-benchmark.sh --binary-directory ./build \
+    --config ./tools/conflation-diagnostic.conf --client-role feed
+bash ./tools/run-benchmark.sh --binary-directory ./build \
+    --config ./tools/conflation-diagnostic.conf --client-role stream-feed
+```
+
+To test whether client-side listener speed contributes to FEED supersession, repeat the FEED diagnostic with a
+controlled delay before every market-event callback. `0` disables the delay:
+
+```powershell
+.\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release `
+    -Config .\tools\conflation-diagnostic.conf -ClientRole feed -ListenerDelay 1ms
+```
+
+```sh
+bash ./tools/run-benchmark.sh --binary-directory ./build \
+    --config ./tools/conflation-diagnostic.conf --client-role feed --listener-delay 1ms
+```
+
 Each output prefix includes its repetition, for example `150k-100ms-r02`. The analyzer additionally writes
 `latency-runs.csv`, `latency-comparison.csv`, `monitoring-comparison.csv`, and a concise `REPORT.md`. Comparison CSVs
 contain the minimum, median, and maximum of run-level values; original summaries and logs remain available for more

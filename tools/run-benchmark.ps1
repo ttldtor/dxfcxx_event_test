@@ -3,6 +3,9 @@ param(
     [string]$BinaryDirectory,
     [string]$OutputRoot = "benchmark-results",
     [string]$Config = (Join-Path $PSScriptRoot "benchmark-suite.conf"),
+    [ValidateSet("", "feed", "stream-feed")]
+    [string]$ClientRole = "",
+    [string]$ListenerDelay = "",
     [switch]$DryRun
 )
 
@@ -48,6 +51,15 @@ $clientBinary = Get-Binary "latency_client"
 $analyzerBinary = Get-Binary "latency_analyzer"
 $settings = $suite.Settings
 $repetitions = [int]$settings.REPETITIONS
+$clientRole = if ($ClientRole) { $ClientRole } else { $settings.CLIENT_ROLE }
+$listenerDelay = if ($ListenerDelay) {
+    $ListenerDelay
+} elseif ($settings.ContainsKey("LISTENER_DELAY")) {
+    $settings.LISTENER_DELAY
+} else {
+    "0"
+}
+
 if ($repetitions -le 0) { throw "REPETITIONS must be positive" }
 
 if ($DryRun) {
@@ -55,7 +67,7 @@ if ($DryRun) {
         for ($position = 0; $position -lt $suite.Profiles.Count; ++$position) {
             $profile = $suite.Profiles[($position + $repetition - 1) % $suite.Profiles.Count]
             $prefix = "{0}-r{1:d2}" -f $profile.Name, $repetition
-            Write-Output "$prefix : $($profile.Task) ; role=$($settings.CLIENT_ROLE) startup-timeout=$($settings.STARTUP_TIMEOUT) warmup=$($settings.WARMUP) duration=$($settings.DURATION)"
+            Write-Output "$prefix : $($profile.Task) ; role=$clientRole listener-delay=$listenerDelay startup-timeout=$($settings.STARTUP_TIMEOUT) warmup=$($settings.WARMUP) duration=$($settings.DURATION)"
         }
     }
     Write-Output "Analyzer: $analyzerBinary --monitoring-period $($settings.MONITORING_PERIOD)"
@@ -78,7 +90,8 @@ $manifest = Join-Path $runDirectory "run-manifest.csv"
     "processor_count=$([Environment]::ProcessorCount)"
     "binary_directory=$((Resolve-Path -LiteralPath $BinaryDirectory).Path)"
     "suite_config=$((Resolve-Path -LiteralPath $Config).Path)"
-    "client_role=$($settings.CLIENT_ROLE)"
+    "client_role=$clientRole"
+    "listener_delay=$listenerDelay"
 ) | Set-Content -LiteralPath (Join-Path $runDirectory "environment.txt") -Encoding utf8
 
 $failed = $false
@@ -113,7 +126,8 @@ for ($repetition = 1; $repetition -le $repetitions; ++$repetition) {
             if (-not $ready) { throw "Latency server did not become ready" }
 
             & $clientBinary --address $settings.ADDRESS --task $profile.Task `
-                --role $settings.CLIENT_ROLE `
+                --role $clientRole `
+                --listener-delay $listenerDelay `
                 --warmup $settings.WARMUP --duration $settings.DURATION --window $settings.WINDOW `
                 --batch-timeout $settings.BATCH_TIMEOUT --startup-timeout $settings.STARTUP_TIMEOUT `
                 --monitoring-stat $settings.MONITORING_PERIOD `

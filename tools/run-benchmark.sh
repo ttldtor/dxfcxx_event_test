@@ -5,6 +5,8 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 binary_directory=""
 output_root="benchmark-results"
 config="$script_dir/benchmark-suite.conf"
+client_role_override=""
+listener_delay_override=""
 dry_run=false
 
 while (($#)); do
@@ -12,6 +14,8 @@ while (($#)); do
         --binary-directory) binary_directory=$2; shift 2 ;;
         --output-root) output_root=$2; shift 2 ;;
         --config) config=$2; shift 2 ;;
+        --client-role) client_role_override=$2; shift 2 ;;
+        --listener-delay) listener_delay_override=$2; shift 2 ;;
         --dry-run) dry_run=true; shift ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -26,6 +30,7 @@ batch_timeout=""
 startup_timeout=""
 monitoring_period=""
 client_role=""
+listener_delay="0"
 cooldown_seconds=""
 address=""
 listen_address=""
@@ -51,6 +56,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
             STARTUP_TIMEOUT) startup_timeout=$value ;;
             MONITORING_PERIOD) monitoring_period=$value ;;
             CLIENT_ROLE) client_role=$value ;;
+            LISTENER_DELAY) listener_delay=$value ;;
             COOLDOWN_SECONDS) cooldown_seconds=$value ;;
             ADDRESS) address=$value ;;
             LISTEN_ADDRESS) listen_address=$value ;;
@@ -58,6 +64,9 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
         esac
     fi
 done < "$config"
+
+[[ -n "$client_role_override" ]] && client_role=$client_role_override
+[[ -n "$listener_delay_override" ]] && listener_delay=$listener_delay_override
 
 [[ -n "$repetitions" ]] || { echo "Missing REPETITIONS in $config" >&2; exit 2; }
 [[ -n "$warmup" ]] || { echo "Missing WARMUP in $config" >&2; exit 2; }
@@ -67,6 +76,10 @@ done < "$config"
 [[ -n "$startup_timeout" ]] || { echo "Missing STARTUP_TIMEOUT in $config" >&2; exit 2; }
 [[ -n "$monitoring_period" ]] || { echo "Missing MONITORING_PERIOD in $config" >&2; exit 2; }
 [[ -n "$client_role" ]] || { echo "Missing CLIENT_ROLE in $config" >&2; exit 2; }
+[[ "$client_role" == feed || "$client_role" == stream-feed ]] || {
+    echo "CLIENT_ROLE must be feed or stream-feed" >&2
+    exit 2
+}
 [[ -n "$cooldown_seconds" ]] || { echo "Missing COOLDOWN_SECONDS in $config" >&2; exit 2; }
 [[ -n "$address" ]] || { echo "Missing ADDRESS in $config" >&2; exit 2; }
 [[ -n "$listen_address" ]] || { echo "Missing LISTEN_ADDRESS in $config" >&2; exit 2; }
@@ -85,9 +98,9 @@ if $dry_run; then
     for ((repetition=1; repetition<=repetitions; ++repetition)); do
         for ((position=0; position<${#profile_names[@]}; ++position)); do
             index=$(((position + repetition - 1) % ${#profile_names[@]}))
-            printf '%s-r%02d : %s ; role=%s startup-timeout=%s warmup=%s duration=%s\n' \
+            printf '%s-r%02d : %s ; role=%s listener-delay=%s startup-timeout=%s warmup=%s duration=%s\n' \
                 "${profile_names[$index]}" "$repetition" "${profile_tasks[$index]}" "$client_role" \
-                "$startup_timeout" "$warmup" "$duration"
+                "$listener_delay" "$startup_timeout" "$warmup" "$duration"
         done
     done
     printf 'Analyzer: %s --monitoring-period %s\n' "$analyzer_binary" "$monitoring_period"
@@ -109,6 +122,7 @@ printf '%s\n' 'profile,repetition,task,status,client_exit_code' > "$manifest"
     printf 'binary_directory=%s\n' "$(cd "$binary_directory" && pwd)"
     printf 'suite_config=%s\n' "$(cd "$(dirname "$config")" && pwd)/$(basename "$config")"
     printf 'client_role=%s\n' "$client_role"
+    printf 'listener_delay=%s\n' "$listener_delay"
 } > "$run_directory/environment.txt"
 
 server_pid=""
@@ -148,6 +162,7 @@ for ((repetition=1; repetition<=repetitions; ++repetition)); do
         if $ready; then
             "$client_binary" --address "$address" --task "$task" \
                 --role "$client_role" \
+                --listener-delay "$listener_delay" \
                 --warmup "$warmup" --duration "$duration" \
                 --window "$window" --batch-timeout "$batch_timeout" \
                 --startup-timeout "$startup_timeout" \
