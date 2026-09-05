@@ -276,12 +276,13 @@ preserves intermediate updates, but its agent buffer is finite: QD uses `DROP_OL
 monitoring `Dropped` counter if a consumer falls far enough behind to overflow that buffer.
 
 The summary contains aggregate `event` and `batch` rows plus rows for each recurring event type. Their
-`expected_per_batch` value is the expected sample count for that row (`1` for `batch`). Delivery columns report
-published and delivered recurring events, delivery ratio, deficits, excess events, and full/partial/empty correlated
-publications. In `FEED` mode, `not_delivered` is expected when intermediate states are conflated. It is deliberately
-named as an observation rather than a cause: compare it with QD `Dropped`, buffer, lag, and publication diagnostics
-before attributing every deficit to conflation. Events whose timestamp marker was not delivered are counted as
-`uncorrelated_events`; they are excluded from the conditional delivery ratio and cannot produce a latency sample.
+`expected_per_batch` value is the expected sample count for that row (`1` for `batch`). The delivery-accounting
+columns report published and listener-observed recurring events, `listener_coverage`, `listener_deficit`, excess
+events, and full/partial/empty correlated publications. `listener_deficit` is deliberately named as an observation,
+not a cause or a transport-loss counter. In `FEED` mode it may contain TICKER states superseded before listener
+delivery; compare it with QD `Dropped`, buffer, lag, and publication diagnostics before attributing every deficit to
+conflation. Events whose timestamp marker was not delivered are counted as
+`uncorrelated_events`; they are excluded from the conditional listener coverage and cannot produce a latency sample.
 Initial `Profile` delivery is reported separately in the client log and is excluded from recurring latency/rate
 statistics. Event outliers are classified against the IQR threshold of their own event type and use the corresponding
 type-specific sample kind in the outliers file.

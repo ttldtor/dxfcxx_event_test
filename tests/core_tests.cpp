@@ -187,15 +187,26 @@ TEST_CASE("repeated benchmark comparison files") {
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "latency-runs.csv") > 0);
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "monitoring-comparison.csv") > 0);
 
+    std::ifstream latencyRuns{repeatedFixture.path() / "latency-runs.csv"};
+    const std::string latencyRunsText{std::istreambuf_iterator<char>{latencyRuns}, {}};
+
+    CHECK(latencyRunsText.contains("\"listener_deficit\",\"listener_coverage\""));
+    CHECK_FALSE(latencyRunsText.contains("\"not_delivered\""));
+
     std::ifstream report{repeatedFixture.path() / "REPORT.md"};
     const std::string reportText{std::istreambuf_iterator<char>{report}, {}};
 
     CHECK(reportText.contains("| example | stream-feed | 3 |"));
+    CHECK(reportText.contains("Listener coverage median"));
+    CHECK(reportText.contains("Listener deficit median"));
+    CHECK(reportText.contains("not a transport-loss"));
+    CHECK(reportText.contains("QD-drop counter"));
     CHECK(reportText.contains("## Client monitoring"));
     CHECK(reportText.contains("| Scenario | Read records/s | Read lag | CPU | Maximum buffer | Maximum dropped |"));
     CHECK(reportText.contains("## Server monitoring"));
     CHECK(reportText.contains("| Scenario | Write records/s | Write lag | CPU | Maximum buffer | Maximum dropped |"));
     CHECK(reportText.contains("`Dropped = 0` rules out drops counted by the corresponding QD endpoint"));
+    CHECK(reportText.contains("cannot locate TICKER supersession on the publisher or feed side"));
 }
 
 TEST_CASE("invalid monitoring inputs are rejected") {

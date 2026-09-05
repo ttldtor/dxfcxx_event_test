@@ -47,8 +47,8 @@ struct LatencyRunRow {
     std::string endpointRole{"stream-feed"};
     double published{};
     double delivered{};
-    double notDelivered{};
-    double deliveryRatio{};
+    double listenerDeficit{};
+    double listenerCoverage{};
     double excessEvents{};
     double fullPublications{};
     double partialPublications{};
@@ -479,8 +479,12 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
     const auto roleIndex = indexOf("endpoint_role");
     const auto publishedIndex = indexOf("published");
     const auto deliveredIndex = indexOf("delivered");
-    const auto notDeliveredIndex = indexOf("not_delivered");
-    const auto deliveryRatioIndex = indexOf("delivery_ratio");
+    const auto listenerDeficitIndex = indexOf("listener_deficit").or_else([&] {
+        return indexOf("not_delivered");
+    });
+    const auto listenerCoverageIndex = indexOf("listener_coverage").or_else([&] {
+        return indexOf("delivery_ratio");
+    });
     const auto excessIndex = indexOf("excess_events");
     const auto fullIndex = indexOf("full_publications");
     const auto partialIndex = indexOf("partial_publications");
@@ -592,8 +596,9 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
         };
         row.published = optionalNumber(publishedIndex, row.samples);
         row.delivered = optionalNumber(deliveredIndex, row.samples);
-        row.notDelivered = optionalNumber(notDeliveredIndex);
-        row.deliveryRatio = optionalNumber(deliveryRatioIndex, row.published ? row.delivered / row.published : 0.0);
+        row.listenerDeficit = optionalNumber(listenerDeficitIndex);
+        row.listenerCoverage =
+            optionalNumber(listenerCoverageIndex, row.published ? row.delivered / row.published : 0.0);
         row.excessEvents = optionalNumber(excessIndex);
         row.fullPublications = optionalNumber(fullIndex);
         row.partialPublications = optionalNumber(partialIndex);
@@ -610,7 +615,7 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
             row.nominalEventsPerSecond = 0;
         }
 
-        const auto exactDelivery = row.sampleKind == "batch-total" || row.notDelivered == 0;
+        const auto exactDelivery = row.sampleKind == "batch-total" || row.listenerDeficit == 0;
         row.integrityOk = batches > 0 && row.clockAnomalies == 0 && row.missingBatches == 0 &&
                           row.pendingBatches == 0 && row.excessEvents == 0 &&
                           (row.endpointRole == "feed" || exactDelivery);
@@ -862,7 +867,7 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
 
     runs << "\"profile\",\"scenario\",\"repetition\",\"nominal_events_per_second\",\"sample_kind\","
             "\"samples\",\"expected_per_batch\",\"endpoint_role\",\"published\",\"delivered\","
-            "\"not_delivered\",\"delivery_ratio\",\"excess_events\",\"full_publications\","
+            "\"listener_deficit\",\"listener_coverage\",\"excess_events\",\"full_publications\","
             "\"partial_publications\",\"empty_publications\",\"uncorrelated_events\",\"callbacks\","
             "\"clock_anomalies\",\"missing_batches\","
             "\"pending_batches\",\"integrity_ok\",\"min_us\",\"mean_us\",\"p50_us\",\"p90_us\","
@@ -879,8 +884,8 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
         writeColumn(runs, row.endpointRole);
         writeColumn(runs, row.published);
         writeColumn(runs, row.delivered);
-        writeColumn(runs, row.notDelivered);
-        writeColumn(runs, row.deliveryRatio);
+        writeColumn(runs, row.listenerDeficit);
+        writeColumn(runs, row.listenerCoverage);
         writeColumn(runs, row.excessEvents);
         writeColumn(runs, row.fullPublications);
         writeColumn(runs, row.partialPublications);
@@ -915,8 +920,8 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
                                         LatencyMetric{"p99_us", &LatencyRunRow::p99Us},
                                         LatencyMetric{"p999_us", &LatencyRunRow::p999Us},
                                         LatencyMetric{"max_us", &LatencyRunRow::maximumUs},
-                                        LatencyMetric{"delivery_ratio", &LatencyRunRow::deliveryRatio},
-                                        LatencyMetric{"not_delivered", &LatencyRunRow::notDelivered}};
+                                        LatencyMetric{"listener_coverage", &LatencyRunRow::listenerCoverage},
+                                        LatencyMetric{"listener_deficit", &LatencyRunRow::listenerDeficit}};
     std::map<std::pair<std::string, std::string>, std::vector<const LatencyRunRow *>> latencyGroups;
 
     for (const auto &row : latencyRows) {
@@ -989,7 +994,7 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
 
 Run-level values are aggregated using the median; the range shows the minimum and maximum across independent repetitions. Latencies are in milliseconds.
 
-| Scenario | Role | Runs | Delivery median | Not delivered median | Event p50 median | Event p99 median (range) | Event p99.9 median | Batch p99 median | Integrity |
+| Scenario | Role | Runs | Listener coverage median | Listener deficit median | Event p50 median | Event p99 median (range) | Event p99.9 median | Batch p99 median | Integrity |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---|
 )";
 
@@ -1026,8 +1031,8 @@ Run-level values are aggregated using the median; the range shows the minimum an
 
             return compareRuns(std::move(values));
         };
-        const auto delivery = collectRaw(&LatencyRunRow::deliveryRatio);
-        const auto notDelivered = collectRaw(&LatencyRunRow::notDelivered);
+        const auto listenerCoverage = collectRaw(&LatencyRunRow::listenerCoverage);
+        const auto listenerDeficit = collectRaw(&LatencyRunRow::listenerDeficit);
         const auto eventRow = std::ranges::find_if(rows, [](const auto *row) {
             return row->sampleKind == "event-total";
         });
@@ -1038,18 +1043,19 @@ Run-level values are aggregated using the median; the range shows the minimum an
         const auto missing = rows.empty() ? 0.0 : rows.front()->missingBatches;
         const auto integrityText = integrity ? "OK" : missing > 0 ? "CHECK; missing batches reported" : "CHECK";
         report << "| " << scenario << " | " << role << " | " << p50.runs << " | " << std::fixed << std::setprecision(3)
-               << delivery.median * 100.0 << "% | " << notDelivered.median << " | " << p50.median << " | " << p99.median
-               << " (" << p99.minimum << "–" << p99.maximum << ") | " << p999.median << " | " << batchP99.median
-               << " | " << integrityText << " |\n";
+               << listenerCoverage.median * 100.0 << "% | " << listenerDeficit.median << " | " << p50.median << " | "
+               << p99.median << " (" << p99.minimum << "–" << p99.maximum << ") | " << p999.median << " | "
+               << batchP99.median << " | " << integrityText << " |\n";
     }
 
     report << R"(
 
-`Delivery median` is delivered recurring events divided by events expected for the correlated publications.
-`Not delivered` is an observed delivery deficit, not proof of FEED conflation by itself: endpoint buffering,
-`Dropped` records, incomplete publication correlation, and measurement boundaries must be checked alongside it.
+`Listener coverage median` is recurring events observed by the C++ listener divided by events expected for the
+correlated publications. `Listener deficit` is the corresponding observation gap. It is not a transport-loss or
+QD-drop counter. In `FEED` mode, the gap may contain TICKER states superseded before listener delivery; endpoint
+buffering, `Dropped` records, incomplete publication correlation, and measurement boundaries must also be checked.
 Events without a delivered timestamp marker are reported separately as `uncorrelated_events` and excluded from the
-delivery ratio.
+listener coverage.
 )";
 
     report << "\nGenerated files: `latency-runs.csv`, `latency-comparison.csv`, `monitoring.csv`, "
@@ -1101,6 +1107,10 @@ The table shows medians across repetitions. Lag is in milliseconds; dropped is t
     report << R"(
 
 `Dropped = 0` rules out drops counted by the corresponding QD endpoint, but it does not rule out normal FEED conflation.
+The current measurements cannot locate TICKER supersession on the publisher or feed side. Similar server write and
+client read rates make transport loss unlikely, but they are interval averages rather than a record-by-record audit.
+Low average CPU, buffer, and network utilization also do not exclude conflation: a short burst only has to overtake
+listener processing for the same record and symbol before the next monitoring sample.
 )";
 
     if (std::ranges::any_of(latencyRows, [](const LatencyRunRow &row) {

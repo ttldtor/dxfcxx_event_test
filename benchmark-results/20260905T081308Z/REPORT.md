@@ -2,7 +2,7 @@
 
 Run-level values are aggregated using the median; the range shows the minimum and maximum across independent repetitions. Latencies are in milliseconds.
 
-| Scenario | Role | Runs | Delivery median | Not delivered median | Event p50 median | Event p99 median (range) | Event p99.9 median | Batch p99 median | Integrity |
+| Scenario | Role | Runs | Listener coverage median | Listener deficit median | Event p50 median | Event p99 median (range) | Event p99.9 median | Batch p99 median | Integrity |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---|
 | 150k-100ms | feed | 3 | 99.993% | 6520.000 | 26.508 | 46.594 (45.312–48.738) | 57.492 | 53.877 | OK |
 | 150k-10ms | feed | 3 | 99.862% | 125032.000 | 2.702 | 10.516 (10.314–10.813) | 13.082 | 11.345 | CHECK |
@@ -10,11 +10,12 @@ Run-level values are aggregated using the median; the range shows the minimum an
 | 150k-1s | feed | 3 | 100.000% | 0.000 | 287.955 | 431.980 (393.768–438.925) | 466.936 | 469.600 | OK |
 
 
-`Delivery median` is delivered recurring events divided by events expected for the correlated publications.
-`Not delivered` is an observed delivery deficit, not proof of FEED conflation by itself: endpoint buffering,
-`Dropped` records, incomplete publication correlation, and measurement boundaries must be checked alongside it.
+`Listener coverage median` is recurring events observed by the C++ listener divided by events expected for the
+correlated publications. `Listener deficit` is the corresponding observation gap. It is not a transport-loss or
+QD-drop counter. In `FEED` mode, the gap may contain TICKER states superseded before listener delivery; endpoint
+buffering, `Dropped` records, incomplete publication correlation, and measurement boundaries must also be checked.
 Events without a delivered timestamp marker are reported separately as `uncorrelated_events` and excluded from the
-delivery ratio.
+listener coverage.
 
 Generated files: `latency-runs.csv`, `latency-comparison.csv`, `monitoring.csv`, `monitoring-summary.csv`, and `monitoring-comparison.csv`.
 
@@ -43,3 +44,7 @@ The table shows medians across repetitions. Lag is in milliseconds; dropped is t
 
 
 `Dropped = 0` rules out drops counted by the corresponding QD endpoint, but it does not rule out normal FEED conflation.
+The current measurements cannot locate TICKER supersession on the publisher or feed side. Similar server write and
+client read rates make transport loss unlikely, but they are interval averages rather than a record-by-record audit.
+Low average CPU, buffer, and network utilization also do not exclude conflation: a short burst only has to overtake
+listener processing for the same record and symbol before the next monitoring sample.

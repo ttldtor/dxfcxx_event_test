@@ -185,7 +185,7 @@ struct PendingBatch {
 };
 
 struct DeliveryCounters {
-    std::array<std::size_t, EVENT_KINDS.size()> published{}, delivered{}, notDelivered{}, excess{};
+    std::array<std::size_t, EVENT_KINDS.size()> published{}, delivered{}, listenerDeficit{}, excess{};
     std::size_t fullPublications{}, partialPublications{}, emptyPublications{};
     std::size_t uncorrelatedEvents{};
 };
@@ -324,8 +324,8 @@ class Collector {
 
             if (received < expected) {
                 const auto difference = expected - received;
-                deliveryWindow_.notDelivered[index] += difference;
-                deliveryTotal_.notDelivered[index] += difference;
+                deliveryWindow_.listenerDeficit[index] += difference;
+                deliveryTotal_.listenerDeficit[index] += difference;
                 complete = false;
             } else if (received > expected) {
                 const auto difference = received - expected;
@@ -636,7 +636,7 @@ class Reporter {
     std::string endpointRole_;
 
     struct DeliveryView {
-        std::size_t published{}, delivered{}, notDelivered{}, excess{};
+        std::size_t published{}, delivered{}, listenerDeficit{}, excess{};
         std::size_t fullPublications{}, partialPublications{}, emptyPublications{};
         std::size_t uncorrelatedEvents{};
     };
@@ -653,7 +653,7 @@ class Reporter {
             const auto index = eventKindIndex(current);
             result.published += delivery.published[index];
             result.delivered += delivery.delivered[index];
-            result.notDelivered += delivery.notDelivered[index];
+            result.listenerDeficit += delivery.listenerDeficit[index];
             result.excess += delivery.excess[index];
         }
 
@@ -721,13 +721,13 @@ class Reporter {
     void writeSummary(std::int64_t start, std::int64_t end, std::string_view kind, const latency::Statistics &s,
                       std::size_t expectedPerBatch, std::size_t callbacks, std::size_t negative, std::size_t missing,
                       std::size_t pending, const DeliveryView &delivery) {
-        const auto deliveryRatio =
+        const auto listenerCoverage =
             delivery.published ? static_cast<double>(delivery.delivered) / delivery.published : 0.0;
 
         summary_ << latency::utcTimestamp(start) << ',' << latency::utcTimestamp(end) << ',' << kind << ',' << s.count
                  << ',' << expectedPerBatch << ',' << publishPeriodMs_ << ',' << nominalEventsPerSecond_ << ','
                  << endpointRole_ << ',' << delivery.published << ',' << delivery.delivered << ','
-                 << delivery.notDelivered << ',' << deliveryRatio << ',' << delivery.excess << ','
+                 << delivery.listenerDeficit << ',' << listenerCoverage << ',' << delivery.excess << ','
                  << delivery.fullPublications << ',' << delivery.partialPublications << ','
                  << delivery.emptyPublications << ',' << delivery.uncorrelatedEvents << ',' << callbacks << ','
                  << negative << ',' << missing << ',' << pending << ',' << microseconds(s.minimum) << ','
@@ -780,7 +780,7 @@ class Reporter {
         }
 
         summary_ << "window_start_utc,window_end_utc,sample_kind,samples,expected_per_batch,publish_period_ms,"
-                    "nominal_events_per_second,endpoint_role,published,delivered,not_delivered,delivery_ratio,"
+                    "nominal_events_per_second,endpoint_role,published,delivered,listener_deficit,listener_coverage,"
                     "excess_events,full_publications,partial_publications,empty_publications,uncorrelated_events,"
                     "callbacks,"
                     "clock_anomalies,missing_batches,pending_batches,min_us,"
@@ -801,16 +801,17 @@ class Reporter {
         const auto batchStats = latency::calculateStatistics(latencies(data.batches));
 
         const auto delivery = deliveryView(data.delivery);
-        const auto deliveryPercent =
+        const auto listenerCoveragePercent =
             delivery.published ? static_cast<double>(delivery.delivered) * 100.0 / delivery.published : 0.0;
 
         std::cout << std::format("Window {} [{}, {}] callbacks={} clock-anomalies={} missing-batches={} "
-                                 "delivery={}/{} ({:.3f}%) not-delivered={} excess={} uncorrelated={} "
+                                 "listener-events={}/{} ({:.3f}%) listener-deficit={} excess={} uncorrelated={} "
                                  "publications(full/partial/empty)={}/{}/{}\n",
                                  windowIndex_, latency::utcTimestamp(start), latency::utcTimestamp(end), data.callbacks,
-                                 data.negative, data.missing, delivery.delivered, delivery.published, deliveryPercent,
-                                 delivery.notDelivered, delivery.excess, delivery.uncorrelatedEvents,
-                                 delivery.fullPublications, delivery.partialPublications, delivery.emptyPublications);
+                                 data.negative, data.missing, delivery.delivered, delivery.published,
+                                 listenerCoveragePercent, delivery.listenerDeficit, delivery.excess,
+                                 delivery.uncorrelatedEvents, delivery.fullPublications, delivery.partialPublications,
+                                 delivery.emptyPublications);
         printStats("event", eventStats);
 
         writeSummary(start, end, "event", eventStats, expectedEventsPerBatch_, data.callbacks, data.negative,
@@ -838,14 +839,14 @@ class Reporter {
         const auto eventStats = latency::calculateStatistics(combinedLatencies(totals.eventsByKind));
         const auto batchStats = latency::calculateStatistics(totals.batches);
         const auto delivery = deliveryView(totals.delivery);
-        const auto deliveryPercent =
+        const auto listenerCoveragePercent =
             delivery.published ? static_cast<double>(delivery.delivered) * 100.0 / delivery.published : 0.0;
 
         std::cout << std::format("Final summary callbacks={} clock-anomalies={} missing-batches={} pending={} "
-                                 "delivery={}/{} ({:.3f}%) not-delivered={} excess={} uncorrelated={} "
+                                 "listener-events={}/{} ({:.3f}%) listener-deficit={} excess={} uncorrelated={} "
                                  "publications(full/partial/empty)={}/{}/{}\n",
                                  totals.callbacks, totals.negative, totals.missing, totals.pending, delivery.delivered,
-                                 delivery.published, deliveryPercent, delivery.notDelivered, delivery.excess,
+                                 delivery.published, listenerCoveragePercent, delivery.listenerDeficit, delivery.excess,
                                  delivery.uncorrelatedEvents, delivery.fullPublications, delivery.partialPublications,
                                  delivery.emptyPublications);
         printStats("event", eventStats);
