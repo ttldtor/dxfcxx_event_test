@@ -215,16 +215,21 @@ class ChildProcess {
     std::optional<int> exitCode_;
 
     public:
+    /// Creates an empty process owner.
     ChildProcess() = default;
 
+    /// Process ownership cannot be copied.
     ChildProcess(const ChildProcess &) = delete;
 
+    /// Process ownership cannot be copy-assigned.
     ChildProcess &operator=(const ChildProcess &) = delete;
 
+    /// Transfers process ownership from another instance.
     ChildProcess(ChildProcess &&other) noexcept {
         *this = std::move(other);
     }
 
+    /// Terminates the currently owned process, then transfers ownership from another instance.
     ChildProcess &operator=(ChildProcess &&other) noexcept {
         if (this == &other) {
             return *this;
@@ -243,6 +248,7 @@ class ChildProcess {
         return *this;
     }
 
+    /// Terminates the owned process tree when it is still running.
     ~ChildProcess() {
         terminate();
     }

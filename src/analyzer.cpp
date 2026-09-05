@@ -16,11 +16,13 @@ namespace {
 
 using namespace std::chrono_literals;
 
+/** Command-line settings for benchmark result analysis. */
 struct Config {
     std::filesystem::path runDirectory;
     std::chrono::milliseconds monitoringPeriod{10s};
 };
 
+/** Parses and validates analyzer command-line arguments. */
 Config parseArgs(int argc, char **argv) {
     Config config;
 
@@ -65,6 +67,7 @@ Config parseArgs(int argc, char **argv) {
 
 } // namespace
 
+/** Runs the benchmark result analyzer application. */
 int main(int argc, char **argv) {
     try {
         const auto config = parseArgs(argc, argv);

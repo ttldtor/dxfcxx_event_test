@@ -14,10 +14,12 @@
 
 namespace latency {
 namespace {
+/** Returns the zero-padded symbol width required for a quantity. */
 std::size_t symbolWidth(std::size_t quantity) {
     return std::max<std::size_t>(2, std::to_string(quantity - 1).size());
 }
 
+/** Maps a task-DSL type code to a supported event kind. */
 std::optional<EventKind> parseKind(char value) {
     switch (value) {
     case 'Q':

@@ -118,7 +118,7 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text);
  * Returns the display name of an event type.
  *
  * @param kind The event type.
- * @return `Quote`, `Trade`, or `Summary`.
+ * @return `Quote`, `Trade`, `TradeETH`, or `Summary`.
  */
 std::string eventKindName(EventKind kind);
 

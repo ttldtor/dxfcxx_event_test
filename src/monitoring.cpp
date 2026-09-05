@@ -29,17 +29,20 @@ constexpr std::string_view NUMBER_PATTERN = R"([-+]?[0-9][0-9,]*(?:\.[0-9]+)?)";
 using Clock = std::chrono::system_clock;
 using TimePoint = Clock::time_point;
 
+/** Defines the latency-measurement interval associated with one run. */
 struct Measurement {
     TimePoint start;
     TimePoint end;
     double nominalEventsPerSecond{};
 };
 
+/** Maps a monitoring CSV metric name to its source sample member. */
 struct MetricDefinition {
     std::string_view name;
     std::optional<double> MonitoringSample::*member;
 };
 
+/** Contains one whole-run latency row used to build cross-run comparisons. */
 struct LatencyRunRow {
     std::string profile;
     BenchmarkProfile identity;
@@ -73,6 +76,7 @@ struct LatencyRunRow {
     bool integrityOk{};
 };
 
+/** Contains one minimum/median/maximum comparison row. */
 struct ComparisonRow {
     std::string scenario;
     std::string category;
@@ -98,6 +102,7 @@ constexpr std::array METRICS{
     MetricDefinition{"cpu_percent", &MonitoringSample::cpuPercent},
 };
 
+/** Parses one RFC 4180-style CSV row. */
 std::vector<std::string> parseCsvRow(std::string_view line) {
     std::vector<std::string> result;
     std::string value;
@@ -130,6 +135,7 @@ std::vector<std::string> parseCsvRow(std::string_view line) {
     return result;
 }
 
+/** Parses one locale-independent decimal number. */
 std::expected<double, std::string> parseNumber(std::string text) {
     std::erase(text, ',');
     std::istringstream input{text};
@@ -147,6 +153,7 @@ std::expected<double, std::string> parseNumber(std::string text) {
     return value;
 }
 
+/** Extracts and parses the first captured number matching a regular expression. */
 std::optional<double> findNumber(const std::string &text, const std::string &pattern) {
     std::smatch match;
 
@@ -157,6 +164,7 @@ std::optional<double> findNumber(const std::string &text, const std::string &pat
     return parseNumber(match[1].str()).value_or(std::numeric_limits<double>::quiet_NaN());
 }
 
+/** Converts a UTC calendar value to Unix time on the current platform. */
 std::time_t utcTime(std::tm *value) {
 #ifdef _WIN32
     const auto result = _mkgmtime(value);
@@ -167,6 +175,7 @@ std::time_t utcTime(std::tm *value) {
     return result;
 }
 
+/** Parses an ISO-8601 UTC timestamp with optional fractional seconds. */
 std::expected<TimePoint, std::string> parseUtcTimestamp(std::string_view text) {
     if (text.size() < 20 || text[4] != '-' || text[7] != '-' || text[10] != 'T' || text[13] != ':' || text[16] != ':') {
         return std::unexpected(std::format("invalid UTC timestamp: {}", text));
@@ -218,6 +227,7 @@ std::expected<TimePoint, std::string> parseUtcTimestamp(std::string_view text) {
     return std::chrono::time_point_cast<Clock::duration>(Clock::from_time_t(seconds) + fraction);
 }
 
+/** Parses the local timestamp format emitted by QD monitoring logs. */
 std::expected<TimePoint, std::string> parseLocalLogTimestamp(const std::string &date, const std::string &time) {
     if (date.size() != 6 || time.size() != 10) {
         return std::unexpected(std::format("invalid QD timestamp: {} {}", date, time));
@@ -249,6 +259,7 @@ std::expected<TimePoint, std::string> parseLocalLogTimestamp(const std::string &
     return Clock::from_time_t(seconds) + milliseconds;
 }
 
+/** Formats a time point as an ISO-8601 UTC timestamp with millisecond precision. */
 std::string formatUtc(TimePoint value) {
     const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(value.time_since_epoch());
     auto seconds = std::chrono::duration_cast<std::chrono::seconds>(milliseconds);
@@ -273,6 +284,7 @@ std::string formatUtc(TimePoint value) {
     return output.str();
 }
 
+/** Reads the measurement boundaries and nominal rate from a latency summary. */
 std::expected<Measurement, std::string> readMeasurement(const std::filesystem::path &path) {
     std::ifstream input{path};
 
@@ -343,6 +355,7 @@ std::expected<Measurement, std::string> readMeasurement(const std::filesystem::p
     return *measurement;
 }
 
+/** Parses QD monitoring records associated with one benchmark process. */
 std::expected<std::vector<MonitoringSample>, std::string>
 readMonitoringLog(const std::filesystem::path &path, const std::string &profile, const std::string &process,
                   const Measurement &measurement, std::chrono::milliseconds monitoringPeriod) {
@@ -410,6 +423,7 @@ readMonitoringLog(const std::filesystem::path &path, const std::string &profile,
     return result;
 }
 
+/** Writes a quoted and escaped string value to a CSV stream. */
 void writeCsvValue(std::ostream &output, std::string_view value) {
     output << '"';
 
@@ -424,18 +438,21 @@ void writeCsvValue(std::ostream &output, std::string_view value) {
     output << '"';
 }
 
+/** Writes a floating-point value to a CSV stream without losing precision. */
 void writeCsvValue(std::ostream &output, double value) {
     std::ostringstream formatted;
     formatted << std::setprecision(17) << value;
     writeCsvValue(output, formatted.str());
 }
 
+/** Writes an optional floating-point value when it is present. */
 void writeCsvValue(std::ostream &output, const std::optional<double> &value) {
     if (value) {
         writeCsvValue(output, *value);
     }
 }
 
+/** Writes one optionally comma-prefixed value to a CSV row. */
 template <typename Value> void writeColumn(std::ostream &output, const Value &value, bool first = false) {
     if (!first) {
         output << ',';
@@ -444,6 +461,7 @@ template <typename Value> void writeColumn(std::ostream &output, const Value &va
     writeCsvValue(output, value);
 }
 
+/** Opens an output file for replacement and reports failures without throwing. */
 std::expected<void, std::string> openOutput(std::ofstream &output, const std::filesystem::path &path) {
     output.open(path, std::ios::trunc);
 
@@ -454,6 +472,7 @@ std::expected<void, std::string> openOutput(std::ofstream &output, const std::fi
     return {};
 }
 
+/** Reads whole-run rows from one latency summary. */
 std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const std::filesystem::path &path,
                                                                          const std::string &profile) {
     std::ifstream input{path};
@@ -627,10 +646,12 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
     return rows;
 }
 
+/** Writes the common header used by comparison CSV files. */
 void writeComparisonHeader(std::ostream &output) {
     output << "\"scenario\",\"category\",\"metric\",\"runs\",\"minimum\",\"median\",\"maximum\"\n";
 }
 
+/** Writes one comparison row to a CSV stream. */
 void writeComparisonRow(std::ostream &output, const ComparisonRow &row) {
     writeColumn(output, row.scenario, true);
     writeColumn(output, row.category);
@@ -911,6 +932,7 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
         runs << '\n';
     }
 
+    /** Maps a report metric name to its source whole-run latency member. */
     struct LatencyMetric {
         std::string_view name;
         double LatencyRunRow::*member;

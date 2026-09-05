@@ -59,16 +59,22 @@ jobs:
         run: cmake --build build --config Release --parallel 4
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
-      - name: Validate Windows benchmark launcher
+      - name: Validate Windows benchmark runner
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./tools/run-benchmark.ps1 -BinaryDirectory ./build/Release -DryRun
-      - name: Validate Unix benchmark launcher
+        run: >-
+          ./build/Release/latency_runner.exe
+          --binary-directory ./build/Release
+          --config ./tools/benchmark-suite.conf
+          --dry-run
+      - name: Validate Unix benchmark runner
         if: runner.os != 'Windows'
         shell: bash
-        run: |
-          bash -n tools/run-benchmark.sh
-          bash tools/run-benchmark.sh --binary-directory ./build --dry-run
+        run: >-
+          ./build/latency_runner
+          --binary-directory ./build
+          --config ./tools/benchmark-suite.conf
+          --dry-run
 
   linux-container:
     name: Linux container / ${{ matrix.platform }}

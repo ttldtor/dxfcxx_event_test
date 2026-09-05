@@ -154,23 +154,22 @@ instrument. The 1 ms profile is a scheduler/publisher stress case and should be 
 uses a one-minute warm-up, a ten-minute measurement, ten-second windows, and a fresh server/client pair. Profile
 order rotates between repetitions and a 30-second cool-down separates runs.
 
-Build the Release binaries first, then run the launcher for the host operating system. Benchmark orchestration is
-implemented by the cross-platform `latency_runner` executable; the PowerShell and Bash launchers are thin
-compatibility wrappers that forward their arguments to it. On Windows:
+Build the Release binaries first, then run the cross-platform `latency_runner` executable. On Windows:
 
 ```powershell
-.\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release
+.\build\Release\latency_runner.exe --binary-directory .\build\Release `
+    --config .\tools\benchmark-suite.conf
 ```
 
 On Linux or macOS:
 
 ```sh
-bash ./tools/run-benchmark.sh --binary-directory ./build
+./build/latency_runner --binary-directory ./build \
+    --config ./tools/benchmark-suite.conf
 ```
 
-Use `-DryRun` or `--dry-run` to validate the suite and display all planned commands without starting a benchmark.
-Both launchers read `tools/benchmark-suite.conf`, including the independent `STARTUP_TIMEOUT`; pass `-Config` or
-`--config` to use a modified suite. Results are
+Use `--dry-run` to validate the suite and display all planned commands without starting a benchmark. Pass
+`--config tools/benchmark-suite.conf` to select the suite, including its independent `STARTUP_TIMEOUT`. Results are
 written below `benchmark-results/<UTC timestamp>/`. A full default run takes approximately two hours and twenty
 minutes plus any machine-dependent startup overhead.
 
@@ -183,16 +182,16 @@ For a short contract A/B, run `tools/conflation-diagnostic.conf` once with the d
 `stream-feed` override. The task, symbol set, cadence, warm-up, and measurement duration remain identical:
 
 ```powershell
-.\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release `
-    -Config .\tools\conflation-diagnostic.conf -ClientRole feed
-.\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release `
-    -Config .\tools\conflation-diagnostic.conf -ClientRole stream-feed
+.\build\Release\latency_runner.exe --binary-directory .\build\Release `
+    --config .\tools\conflation-diagnostic.conf --client-role feed
+.\build\Release\latency_runner.exe --binary-directory .\build\Release `
+    --config .\tools\conflation-diagnostic.conf --client-role stream-feed
 ```
 
 ```sh
-bash ./tools/run-benchmark.sh --binary-directory ./build \
+./build/latency_runner --binary-directory ./build \
     --config ./tools/conflation-diagnostic.conf --client-role feed
-bash ./tools/run-benchmark.sh --binary-directory ./build \
+./build/latency_runner --binary-directory ./build \
     --config ./tools/conflation-diagnostic.conf --client-role stream-feed
 ```
 
@@ -200,12 +199,12 @@ To test whether client-side listener speed contributes to FEED supersession, rep
 controlled delay before every market-event callback. `0` disables the delay:
 
 ```powershell
-.\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release `
-    -Config .\tools\conflation-diagnostic.conf -ClientRole feed -ListenerDelay 1ms
+.\build\Release\latency_runner.exe --binary-directory .\build\Release `
+    --config .\tools\conflation-diagnostic.conf --client-role feed --listener-delay 1ms
 ```
 
 ```sh
-bash ./tools/run-benchmark.sh --binary-directory ./build \
+./build/latency_runner --binary-directory ./build \
     --config ./tools/conflation-diagnostic.conf --client-role feed --listener-delay 1ms
 ```
 
@@ -213,12 +212,12 @@ bash ./tools/run-benchmark.sh --binary-directory ./build \
 workload at 150,000 events/s:
 
 ```powershell
-.\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release `
-    -Config .\tools\symbol-cardinality.conf
+.\build\Release\latency_runner.exe --binary-directory .\build\Release `
+    --config .\tools\symbol-cardinality.conf
 ```
 
 ```sh
-bash ./tools/run-benchmark.sh --binary-directory ./build \
+./build/latency_runner --binary-directory ./build \
     --config ./tools/symbol-cardinality.conf
 ```
 
@@ -227,12 +226,12 @@ the end of each publication. The server preserves the event-type order written i
 event-class effect from a serialization-position effect:
 
 ```powershell
-.\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release `
-    -Config .\tools\event-order.conf
+.\build\Release\latency_runner.exe --binary-directory .\build\Release `
+    --config .\tools\event-order.conf
 ```
 
 ```sh
-bash ./tools/run-benchmark.sh --binary-directory ./build \
+./build/latency_runner --binary-directory ./build \
     --config ./tools/event-order.conf
 ```
 
@@ -241,12 +240,12 @@ blocks for every publication. The operation shuffles four indices, not all 1,500
 and included in the reported server preparation time:
 
 ```powershell
-.\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release `
-    -Config .\tools\event-order-shuffle.conf
+.\build\Release\latency_runner.exe --binary-directory .\build\Release `
+    --config .\tools\event-order-shuffle.conf
 ```
 
 ```sh
-bash ./tools/run-benchmark.sh --binary-directory ./build \
+./build/latency_runner --binary-directory ./build \
     --config ./tools/event-order-shuffle.conf
 ```
 
@@ -255,12 +254,12 @@ at 150,000 events/s. It includes `optimal`, `1`, `375`, `1500`, and `maximum` FE
 control. Limit `1` is intentionally a callback-overhead stress case:
 
 ```powershell
-.\tools\run-benchmark.ps1 -BinaryDirectory .\build\Release `
-    -Config .\tools\events-batch-limit.conf
+.\build\Release\latency_runner.exe --binary-directory .\build\Release `
+    --config .\tools\events-batch-limit.conf
 ```
 
 ```sh
-bash ./tools/run-benchmark.sh --binary-directory ./build \
+./build/latency_runner --binary-directory ./build \
     --config ./tools/events-batch-limit.conf
 ```
 

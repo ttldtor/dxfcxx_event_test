@@ -39,8 +39,16 @@ constexpr std::array EVENT_KINDS{latency::EventKind::QUOTE, latency::EventKind::
                                  latency::EventKind::SUMMARY};
 constexpr std::string_view MONITORING_STAT_PROPERTY = "monitoring.stat";
 
-enum class ClientRole { STREAM_FEED, FEED };
+/** Selects the dxFeed endpoint contract used by the benchmark client. */
+enum class ClientRole {
+    /** Delivers every queued stream update. */
+    STREAM_FEED,
 
+    /** Retains the latest ticker state and permits intermediate-state supersession. */
+    FEED
+};
+
+/** Returns the fixed array index assigned to a supported event kind. */
 std::size_t eventKindIndex(latency::EventKind kind) {
     switch (kind) {
     case latency::EventKind::QUOTE:
@@ -56,6 +64,7 @@ std::size_t eventKindIndex(latency::EventKind kind) {
     throw std::invalid_argument("unknown event kind");
 }
 
+/** Returns the CSV sample-kind label for a supported market event. */
 std::string_view eventSampleKind(latency::EventKind kind) {
     switch (kind) {
     case latency::EventKind::QUOTE:
@@ -71,11 +80,12 @@ std::string_view eventSampleKind(latency::EventKind kind) {
     return "event-unknown";
 }
 
+/** Records an operating-system termination request. */
 void onSignal(int) {
     interrupted.store(true);
 }
 
-// Command-line settings for the warm-up, measurement windows, batch expiry, and report files.
+/** Command-line settings for the warm-up, measurement windows, batch expiry, and report files. */
 struct Config {
     std::string address{"127.0.0.1:7400"};
     std::string task{"SUB:Q100"};
@@ -87,10 +97,12 @@ struct Config {
     std::int32_t eventsBatchLimit{DXFeedSubscription::OPTIMAL_BATCH_LIMIT};
 };
 
+/** Returns the command-line name of a client endpoint role. */
 std::string_view roleName(ClientRole role) {
     return role == ClientRole::FEED ? "feed" : "stream-feed";
 }
 
+/** Returns the command-line name of a native event-notification batch limit. */
 std::string eventsBatchLimitName(std::int32_t limit) {
     if (limit == DXFeedSubscription::OPTIMAL_BATCH_LIMIT) {
         return "optimal";
@@ -103,6 +115,7 @@ std::string eventsBatchLimitName(std::int32_t limit) {
     return std::to_string(limit);
 }
 
+/** Parses a named or positive numeric native event-notification batch limit. */
 std::int32_t parseEventsBatchLimit(std::string_view value) {
     if (value == "optimal" || value == "0") {
         return DXFeedSubscription::OPTIMAL_BATCH_LIMIT;
@@ -122,6 +135,7 @@ std::int32_t parseEventsBatchLimit(std::string_view value) {
     return result;
 }
 
+/** Parses and validates benchmark-client command-line arguments. */
 Config parseArgs(int argc, char **argv) {
     Config config;
 
@@ -204,6 +218,7 @@ Config parseArgs(int argc, char **argv) {
     return config;
 }
 
+/** Applies the selected QD monitoring period before endpoint initialization. */
 void configureMonitoring(const std::optional<std::chrono::milliseconds> &period) {
     const auto value = latency::monitoringPeriodPropertyValue(period);
 
@@ -212,7 +227,7 @@ void configureMonitoring(const std::optional<std::chrono::milliseconds> &period)
     }
 }
 
-// An event is retained until its batch marker supplies the authoritative publication timestamp.
+/** An event retained until its batch marker supplies the authoritative publication timestamp. */
 struct PendingEvent {
     std::int64_t observed{};
     std::optional<std::int64_t> publishTime;
@@ -220,7 +235,7 @@ struct PendingEvent {
     std::string symbol;
 };
 
-// Tracks all events and timing bounds belonging to one server publication sequence.
+/** Tracks all events and timing bounds belonging to one server publication sequence. */
 struct PendingBatch {
     std::optional<std::int64_t> timestamp;
     std::size_t received{};
@@ -229,13 +244,14 @@ struct PendingBatch {
     std::vector<PendingEvent> events;
 };
 
+/** Counts expected and observed delivery outcomes for each supported event kind. */
 struct DeliveryCounters {
     std::array<std::size_t, EVENT_KINDS.size()> published{}, delivered{}, listenerDeficit{}, excess{};
     std::size_t fullPublications{}, partialPublications{}, emptyPublications{};
     std::size_t uncorrelatedEvents{};
 };
 
-// Correlates received events with their batch marker and accumulates latency samples for reporting.
+/** Correlates received events with their batch marker and accumulates latency samples for reporting. */
 class Collector {
     const std::size_t expectedPerBatch_;
     const std::array<std::size_t, EVENT_KINDS.size()> expectedByKind_;
@@ -258,6 +274,7 @@ class Collector {
     std::size_t activity_{};
     DeliveryCounters deliveryWindow_, deliveryTotal_;
 
+    /** Identifies the correlation fields extracted from one supported market event. */
     struct Description {
         latency::EventKind kind;
         std::string symbol;
@@ -552,22 +569,43 @@ class Collector {
     }
 
     public:
+    /** Owns the latency and delivery data accumulated during one reporting window. */
     struct Window {
+        /** Correlated event and whole-batch latency samples. */
         std::vector<latency::Sample> events, batches;
+
+        /** Market-listener callback sizes and durations. */
         std::vector<std::int64_t> callbackSizes, callbackDurations;
+
+        /** Callback, clock-anomaly, incomplete-batch, and pending-batch counts. */
         std::size_t callbacks{}, negative{}, missing{}, pending{};
+
+        /** Delivery accounting for this reporting window. */
         DeliveryCounters delivery;
     };
 
+    /** Owns whole-run samples and delivery counters for final reporting. */
     struct Totals {
+        /** Event latency samples partitioned by supported event kind. */
         std::array<std::vector<std::int64_t>, EVENT_KINDS.size()> eventsByKind;
+
+        /** Whole-publication latency samples. */
         std::vector<std::int64_t> batches;
+
+        /** Market-listener callback sizes and durations. */
         std::vector<std::int64_t> callbackSizes, callbackDurations;
+
+        /** Callback, clock-anomaly, incomplete-batch, and pending-batch counts. */
         std::size_t callbacks{}, negative{}, missing{}, pending{};
+
+        /** Number of unique initial Profile symbols received. */
         std::size_t profilesReceived{};
+
+        /** Whole-run delivery accounting. */
         DeliveryCounters delivery;
     };
 
+    /** Creates a collector and reserves storage for the expected workload. */
     Collector(const latency::TaskPattern &pattern, std::chrono::milliseconds timeout, std::size_t reserveWindowEvents,
               std::size_t reserveBatches, bool allowConflation)
         : expectedPerBatch_(pattern.eventCount()), expectedByKind_([&pattern] {
@@ -594,6 +632,7 @@ class Collector {
         batchGlobal_.reserve(reserveBatches);
     }
 
+    /** Clears window state and begins accepting measurement batches. */
     void beginMeasurement() {
         std::lock_guard lock{mutex_};
         eventWindow_.clear();
@@ -608,19 +647,23 @@ class Collector {
         measuring_ = true;
     }
 
+    /** Stops accepting new publication sequences while retaining pending batches. */
     void endMeasurement() {
         std::lock_guard lock{mutex_};
         acceptingNewBatches_ = false;
     }
 
+    /** Handles control-marker and initial-profile events. */
     void handle(const std::vector<std::shared_ptr<EventType>> &events) {
         handle(events, false, 0ms);
     }
 
+    /** Handles a market-event callback after an optional artificial delay. */
     void handleMarket(const std::vector<std::shared_ptr<EventType>> &events, std::chrono::milliseconds delay) {
         handle(events, true, delay);
     }
 
+    /** Extracts and resets the current reporting window, optionally expiring all pending batches. */
     Window takeWindow(bool expireAll = false) {
         std::lock_guard lock{mutex_};
         const auto cutoff = latency::unixNanosNow() - batchTimeout_.count() * 1'000'000;
@@ -665,6 +708,7 @@ class Collector {
         return result;
     }
 
+    /** Returns a snapshot of whole-run samples and counters. */
     Totals totals() const {
         std::lock_guard lock{mutex_};
 
@@ -673,6 +717,7 @@ class Collector {
             negativeTotal_,     missingTotal_, pending_.size(),     profileSymbolsReceived_.size(), deliveryTotal_};
     }
 
+    /** Waits until all expected initial Profile symbols arrive or the timeout expires. */
     bool waitForProfiles(std::size_t expected, std::chrono::milliseconds timeout) {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         std::unique_lock lock{mutex_};
@@ -690,18 +735,21 @@ class Collector {
         return profileSymbolsReceived_.size() >= expected;
     }
 
+    /** Returns the number of unique initial Profile symbols received. */
     std::size_t profileCount() const {
         std::lock_guard lock{mutex_};
 
         return profileSymbolsReceived_.size();
     }
 
+    /** Returns the number of publication sequences awaiting completion. */
     std::size_t pendingCount() const {
         std::lock_guard lock{mutex_};
 
         return pending_.size();
     }
 
+    /** Returns a monotonic counter of listener activity. */
     std::size_t activity() const {
         std::lock_guard lock{mutex_};
 
@@ -709,7 +757,7 @@ class Collector {
     }
 };
 
-// Writes per-window and whole-run statistics while retaining detailed rows only for outliers.
+/** Writes per-window and whole-run statistics while retaining detailed rows only for outliers. */
 class Reporter {
     std::ofstream summary_, outliers_, callbacks_;
     std::int64_t runStart_{};
@@ -722,6 +770,7 @@ class Reporter {
     std::string endpointRole_;
     std::string eventsBatchLimit_;
 
+    /** Flattens delivery counters into the values written to one report row. */
     struct DeliveryView {
         std::size_t published{}, delivered{}, listenerDeficit{}, excess{};
         std::size_t fullPublications{}, partialPublications{}, emptyPublications{};
@@ -855,7 +904,7 @@ class Reporter {
     }
 
     public:
-    // Opens both reports together so a run cannot proceed with only one of its outputs available.
+    /** Opens all report files together so a run cannot proceed with only some outputs available. */
     Reporter(const std::filesystem::path &prefix, const latency::TaskPattern &pattern, ClientRole role,
              std::int32_t eventsBatchLimit)
         : runStart_(latency::unixNanosNow()), expectedEventsPerBatch_(pattern.eventCount()),
@@ -901,10 +950,12 @@ class Reporter {
                                  callbacksPath.string());
     }
 
+    /** Changes the whole-run start boundary after warm-up completes. */
     void beginMeasurement(std::int64_t start) {
         runStart_ = start;
     }
 
+    /** Calculates and writes all statistics for one measurement window. */
     void window(Collector::Window data, std::int64_t start, std::int64_t end) {
         ++windowIndex_;
         const auto eventStats = latency::calculateStatistics(latencies(data.events));
@@ -950,6 +1001,7 @@ class Reporter {
         callbacks_.flush();
     }
 
+    /** Calculates and writes the final whole-run statistics. */
     void final(const Collector::Totals &totals, std::int64_t end) {
         const auto eventStats = latency::calculateStatistics(combinedLatencies(totals.eventsByKind));
         const auto batchStats = latency::calculateStatistics(totals.batches);
@@ -991,6 +1043,7 @@ class Reporter {
     }
 };
 
+/** Waits for a duration while polling for an operating-system termination request. */
 bool waitFor(std::chrono::milliseconds duration) {
     const auto deadline = std::chrono::steady_clock::now() + duration;
 
@@ -1002,6 +1055,7 @@ bool waitFor(std::chrono::milliseconds duration) {
 }
 } // namespace
 
+/** Runs the benchmark client application. */
 int main(int argc, char **argv) {
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);

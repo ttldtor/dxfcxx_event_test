@@ -33,14 +33,48 @@ namespace {
 std::atomic_bool interrupted{};
 constexpr std::string_view MONITORING_STAT_PROPERTY = "monitoring.stat";
 
+/** Records an operating-system termination request. */
 void onSignal(int) {
     interrupted.store(true);
 }
 
-enum class SubscriptionKind { QUOTE, TRADE, TRADE_ETH, SUMMARY, PROFILE };
+/** Identifies a publisher-side observable subscription. */
+enum class SubscriptionKind {
+    /** Quote subscription. */
+    QUOTE,
 
-enum class CommandType { START, STOP, SYMBOLS_ADDED, SYMBOLS_REMOVED, SUBSCRIPTION_CLOSED };
+    /** Trade subscription. */
+    TRADE,
 
+    /** TradeETH subscription. */
+    TRADE_ETH,
+
+    /** Summary subscription. */
+    SUMMARY,
+
+    /** Initial Profile subscription. */
+    PROFILE
+};
+
+/** Identifies a state transition consumed by the generator worker. */
+enum class CommandType {
+    /** Starts a task after all required subscriptions become ready. */
+    START,
+
+    /** Stops the active task. */
+    STOP,
+
+    /** Adds symbols to an observed subscription. */
+    SYMBOLS_ADDED,
+
+    /** Removes symbols from an observed subscription. */
+    SYMBOLS_REMOVED,
+
+    /** Clears all symbols for a closed subscription. */
+    SUBSCRIPTION_CLOSED
+};
+
+/** Carries one control or subscription update to the generator worker. */
 struct Command {
     CommandType type{};
     std::string text;
@@ -48,10 +82,12 @@ struct Command {
     std::vector<std::string> symbols;
 };
 
+/** Returns the storage index assigned to an observable subscription kind. */
 constexpr std::size_t subscriptionKindIndex(SubscriptionKind kind) {
     return static_cast<std::size_t>(kind);
 }
 
+/** Maps a generated market event kind to its publisher subscription kind. */
 SubscriptionKind subscriptionKind(latency::EventKind kind) {
     switch (kind) {
     case latency::EventKind::QUOTE:
@@ -67,7 +103,7 @@ SubscriptionKind subscriptionKind(latency::EventKind kind) {
     throw std::invalid_argument("unknown event kind");
 }
 
-// Owns the worker thread that turns subscription changes into a single active publishing task.
+/** Owns the worker thread that turns subscription changes into a single active publishing task. */
 class Generator {
     std::shared_ptr<DXPublisher> publisher_;
     std::mutex mutex_;
@@ -77,12 +113,14 @@ class Generator {
     bool stopping_{};
     std::thread thread_;
 
+    /** Owns reusable synthetic events of one market event kind. */
     struct EventPool {
         latency::EventKind kind{};
         std::size_t quantity{};
         std::vector<std::shared_ptr<EventType>> events;
     };
 
+    /** Holds the state and timing counters of the currently published task. */
     struct ActiveTask {
         std::string command;
         latency::TaskPattern pattern;
@@ -98,6 +136,7 @@ class Generator {
         std::chrono::steady_clock::time_point started{std::chrono::steady_clock::now()};
     };
 
+    /** Holds a parsed task until every required subscription becomes ready. */
     struct PendingTask {
         std::string command;
         latency::TaskPattern pattern;
@@ -450,12 +489,14 @@ class Generator {
     }
 
     public:
+    /** Starts the generator worker for a publisher. */
     explicit Generator(std::shared_ptr<DXPublisher> publisher)
         : publisher_(std::move(publisher)), thread_([this] {
               run();
           }) {
     }
 
+    /** Stops and joins the generator worker. */
     ~Generator() {
         {
             std::lock_guard lock{mutex_};
@@ -469,6 +510,7 @@ class Generator {
         }
     }
 
+    /** Enqueues a task-control command. */
     void enqueueControl(CommandType type, std::string text = {}) {
         {
             std::lock_guard lock{mutex_};
@@ -479,6 +521,7 @@ class Generator {
         cv_.notify_one();
     }
 
+    /** Enqueues symbols added to or removed from an observable subscription. */
     void enqueueSymbols(CommandType type, SubscriptionKind subscription,
                         const std::unordered_set<SymbolWrapper> &symbols) {
         std::vector<std::string> strings;
@@ -500,6 +543,7 @@ class Generator {
         cv_.notify_one();
     }
 
+    /** Enqueues closure of an observable subscription. */
     void enqueueSubscriptionClosed(SubscriptionKind subscription) {
         {
             std::lock_guard lock{mutex_};
@@ -511,11 +555,13 @@ class Generator {
     }
 };
 
+/** Command-line settings for the publisher endpoint and QD monitoring. */
 struct Config {
     std::string address{":7400"};
     std::optional<std::chrono::milliseconds> monitoringStat{10s};
 };
 
+/** Parses and validates benchmark-server command-line arguments. */
 Config parseArgs(int argc, char **argv) {
     Config config;
 
@@ -554,6 +600,7 @@ Config parseArgs(int argc, char **argv) {
     return config;
 }
 
+/** Applies the selected QD monitoring period before endpoint initialization. */
 void configureMonitoring(const std::optional<std::chrono::milliseconds> &period) {
     const auto value = latency::monitoringPeriodPropertyValue(period);
 
@@ -563,6 +610,7 @@ void configureMonitoring(const std::optional<std::chrono::milliseconds> &period)
 }
 } // namespace
 
+/** Runs the synthetic benchmark publisher application. */
 int main(int argc, char **argv) {
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
@@ -576,6 +624,7 @@ int main(int argc, char **argv) {
         const auto publisher = endpoint->getPublisher();
         Generator generator{publisher};
 
+        /** Owns an observable subscription and the identifier of its registered listener. */
         struct ObservedSubscription {
             std::shared_ptr<ObservableSubscription> subscription;
             std::size_t listenerId{};

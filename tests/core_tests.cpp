@@ -23,21 +23,25 @@ namespace {
 using namespace std::chrono_literals;
 using namespace latency;
 
+/** Owns a clean temporary directory for one filesystem-oriented test case. */
 class TemporaryDirectory {
     std::filesystem::path path_;
 
     public:
+    /** Recreates the requested temporary directory. */
     explicit TemporaryDirectory(std::filesystem::path path) : path_(std::move(path)) {
         std::error_code error;
         std::filesystem::remove_all(path_, error);
         std::filesystem::create_directories(path_);
     }
 
+    /** Removes the temporary directory and all test artifacts below it. */
     ~TemporaryDirectory() {
         std::error_code error;
         std::filesystem::remove_all(path_, error);
     }
 
+    /** Returns the temporary directory path. */
     [[nodiscard]] const std::filesystem::path &path() const noexcept {
         return path_;
     }

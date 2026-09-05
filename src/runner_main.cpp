@@ -40,6 +40,7 @@ std::optional<std::string> readValue(std::span<char *> arguments, std::size_t &i
 
 } // namespace
 
+/** Runs the native benchmark-suite orchestrator. */
 int main(int argc, char **argv) {
     const std::span arguments{argv, static_cast<std::size_t>(argc)};
     std::optional<std::filesystem::path> binaryDirectory;

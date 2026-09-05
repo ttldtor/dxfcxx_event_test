@@ -8,6 +8,8 @@
   report serialization when it is clearer or avoids unnecessary temporary strings.
 - Use raw string literals when they make multiline text, regular expressions, or escaped content easier to read.
 - Use doctest for C++ tests.
+- Use Doxygen comments for every class, structure, enumeration, public method, public free function, and utility
+  function. Document public API data members and enumerators as well.
 
 ## Formatting
 
