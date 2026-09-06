@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSL-1.0
 
 #include "latency/core.hpp"
+#include "latency/resources.hpp"
 
 #include <dxfeed_graal_cpp_api/api.hpp>
 
@@ -933,8 +934,9 @@ class TimeSeriesTracker {
         measuring_ = false;
     }
 
-    /** Writes one whole-run CSV row describing snapshot and live-delivery behavior. */
-    void writeReport(const std::filesystem::path &prefix, std::int64_t fromTimeMs) const {
+    /** Writes one whole-run CSV row describing snapshot, live delivery, and measurement resources. */
+    void writeReport(const std::filesystem::path &prefix, std::int64_t fromTimeMs,
+                     const latency::ResourceStatistics &resources = {}) const {
         std::lock_guard lock{mutex_};
         auto path = prefix;
 
@@ -958,8 +960,10 @@ class TimeSeriesTracker {
         output << "from_time_ms,requested_symbols,observed_symbols,completed_symbols,snapshot_events,"
                   "snapshot_callbacks,snapshot_begin,snapshot_end,snapshot_snip,snapshot_remove,duplicate_indices,"
                   "premature_live_events,live_events,clock_anomalies,first_event_delay_ms,snapshot_duration_ms,"
-                  "first_live_after_snapshot_ms,live_latency_samples,live_latency_mean_us,live_latency_p50_us,"
-                  "live_latency_p90_us,live_latency_p99_us,live_latency_p999_us,live_latency_max_us\n";
+                  "first_live_relative_to_global_completion_ms,live_latency_samples,live_latency_mean_us,"
+                  "live_latency_p50_us,live_latency_p90_us,live_latency_p99_us,live_latency_p999_us,"
+                  "live_latency_max_us,"
+                  "cpu_core_percent,cpu_host_percent,rss_mean_bytes,rss_maximum_bytes,resource_samples\n";
         output << fromTimeMs << ',' << expectedSymbols_ << ',' << symbols_.size() << ',' << completedSymbols_ << ','
                << snapshotEvents_ << ',' << snapshotCallbacks_ << ',' << snapshotBegins_ << ',' << snapshotEnds_ << ','
                << snapshotSnips_ << ',' << snapshotRemovals_ << ',' << duplicateIndices_ << ',' << prematureLiveEvents_
@@ -972,7 +976,9 @@ class TimeSeriesTracker {
                << latency::nanosecondsToMicroseconds(statistics.p90) << ','
                << latency::nanosecondsToMicroseconds(statistics.p99) << ','
                << latency::nanosecondsToMicroseconds(statistics.p999) << ','
-               << latency::nanosecondsToMicroseconds(statistics.maximum) << '\n';
+               << latency::nanosecondsToMicroseconds(statistics.maximum) << ',' << resources.cpuCorePercent << ','
+               << resources.cpuHostPercent << ',' << resources.rssMeanBytes << ',' << resources.rssMaximumBytes << ','
+               << resources.samples << '\n';
         std::cout << std::format("TimeAndSale snapshot: symbols={}/{} events={} callbacks={} end={} snip={} "
                                  "premature-live={} duplicates={} live={} latency-p99={:.3f} us. Wrote {}\n",
                                  completedSymbols_, expectedSymbols_, snapshotEvents_, snapshotCallbacks_,
@@ -1449,6 +1455,7 @@ int main(int argc, char **argv) {
         collector.beginMeasurement();
         timeSeriesTracker.beginMeasurement();
         const auto measurementStart = std::chrono::steady_clock::now();
+        latency::ResourceSampler resources;
         auto windowStartWall = latency::unixNanosNow();
         reporter.beginMeasurement(windowStartWall);
         auto nextWindow = measurementStart + config.window;
@@ -1463,6 +1470,8 @@ int main(int argc, char **argv) {
                 waitFor(std::min(remaining, 100ms));
             }
 
+            resources.sample();
+
             if (std::chrono::steady_clock::now() >= target) {
                 const auto endWall = latency::unixNanosNow();
                 reporter.window(collector.takeWindow(), windowStartWall, endWall);
@@ -1471,13 +1480,19 @@ int main(int argc, char **argv) {
             }
         }
 
+        const auto measurementFinish = std::chrono::steady_clock::now();
+        resources.sample();
+        const auto resourceStatistics =
+            resources.finish(std::chrono::duration<double>(measurementFinish - measurementStart).count());
+
         control->removeSymbols(config.task);
         const auto drainDeadline = std::chrono::steady_clock::now() + config.batchTimeout;
         auto lastActivity = collector.activity();
         auto quietSince = std::chrono::steady_clock::now();
 
-        // Removing the control symbol stops the publisher asynchronously. Keep accepting tail publications until
-        // both subscriptions remain quiet and every correlated publication is complete.
+        // Removing the control symbol stops the publisher asynchronously. STREAM_FEED waits for every correlated
+        // publication; FEED may retain permanently incomplete publications after valid ticker-state supersession,
+        // so its drain ends once both subscriptions remain quiet.
         while (std::chrono::steady_clock::now() < drainDeadline && !interrupted.load()) {
             std::this_thread::sleep_for(100ms);
             const auto activity = collector.activity();
@@ -1485,7 +1500,7 @@ int main(int argc, char **argv) {
             if (activity != lastActivity) {
                 lastActivity = activity;
                 quietSince = std::chrono::steady_clock::now();
-            } else if (!collector.pendingCount() &&
+            } else if ((config.role == ClientRole::FEED || !collector.pendingCount()) &&
                        std::chrono::steady_clock::now() - quietSince >= CALLBACK_QUIET_PERIOD) {
                 break;
             }
@@ -1503,9 +1518,14 @@ int main(int argc, char **argv) {
         }
 
         reporter.final(collector.totals(), finalWall);
+        std::cout << std::format("Client resources: cpu-core={:.3f}% cpu-host={:.3f}% rss-mean={:.3f} MiB "
+                                 "rss-maximum={:.3f} MiB samples={}\n",
+                                 resourceStatistics.cpuCorePercent, resourceStatistics.cpuHostPercent,
+                                 resourceStatistics.rssMeanBytes / 1'048'576.0,
+                                 resourceStatistics.rssMaximumBytes / 1'048'576.0, resourceStatistics.samples);
 
         if (timeSeriesSubscription) {
-            timeSeriesTracker.writeReport(config.output, timeSeriesFromTimeMs);
+            timeSeriesTracker.writeReport(config.output, timeSeriesFromTimeMs, resourceStatistics);
         }
 
         endpoint->closeAndAwaitTermination();

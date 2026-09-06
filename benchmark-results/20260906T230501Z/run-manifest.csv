@@ -1,0 +1,16 @@
+profile,repetition,task,client_implementation,client_role,events_batch_limit,aggregation_period,time_series_prefill,time_series_history,status,client_exit_code
+"tns-symbols-375-h200",1,"SUB:Q375;T375;E375;S375;N375@10ms#375~22805",graal,feed,optimal,0,10500ms,200,passed,0
+"tns-symbols-750-h200",1,"SUB:Q375;T375;E375;S375;N375@10ms#750~22805",graal,feed,optimal,0,10500ms,200,passed,0
+"tns-symbols-1500-h200",1,"SUB:Q375;T375;E375;S375;N375@10ms#1500~22805",graal,feed,optimal,0,10500ms,200,passed,0
+"tns-symbols-375-h100",1,"SUB:Q375;T375;E375;S375;N375@10ms#375~22805",graal,feed,optimal,0,10500ms,100,passed,0
+"tns-symbols-375-h1000",1,"SUB:Q375;T375;E375;S375;N375@10ms#375~22805",graal,feed,optimal,0,10500ms,1000,passed,0
+"tns-symbols-750-h200",2,"SUB:Q375;T375;E375;S375;N375@10ms#750~22805",graal,feed,optimal,0,10500ms,200,passed,0
+"tns-symbols-1500-h200",2,"SUB:Q375;T375;E375;S375;N375@10ms#1500~22805",graal,feed,optimal,0,10500ms,200,passed,0
+"tns-symbols-375-h100",2,"SUB:Q375;T375;E375;S375;N375@10ms#375~22805",graal,feed,optimal,0,10500ms,100,passed,0
+"tns-symbols-375-h1000",2,"SUB:Q375;T375;E375;S375;N375@10ms#375~22805",graal,feed,optimal,0,10500ms,1000,passed,0
+"tns-symbols-375-h200",2,"SUB:Q375;T375;E375;S375;N375@10ms#375~22805",graal,feed,optimal,0,10500ms,200,passed,0
+"tns-symbols-1500-h200",3,"SUB:Q375;T375;E375;S375;N375@10ms#1500~22805",graal,feed,optimal,0,10500ms,200,passed,0
+"tns-symbols-375-h100",3,"SUB:Q375;T375;E375;S375;N375@10ms#375~22805",graal,feed,optimal,0,10500ms,100,passed,0
+"tns-symbols-375-h1000",3,"SUB:Q375;T375;E375;S375;N375@10ms#375~22805",graal,feed,optimal,0,10500ms,1000,passed,0
+"tns-symbols-375-h200",3,"SUB:Q375;T375;E375;S375;N375@10ms#375~22805",graal,feed,optimal,0,10500ms,200,passed,0
+"tns-symbols-750-h200",3,"SUB:Q375;T375;E375;S375;N375@10ms#750~22805",graal,feed,optimal,0,10500ms,200,passed,0

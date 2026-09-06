@@ -609,15 +609,29 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
         if (key == "PROFILE") {
             const auto parts = split(value, '|');
 
-            if (parts.size() < 2 || parts.size() > 6 || parts[0].empty() || parts[1].empty()) {
+            if (parts.size() < 2 || parts.size() > 8 || parts[0].empty() || parts[1].empty()) {
                 return std::unexpected{std::format("Invalid PROFILE line: {}", rawLine)};
+            }
+
+            std::optional<std::size_t> timeSeriesHistoryLimit;
+
+            if (parts.size() >= 8 && !parts[7].empty()) {
+                const auto parsed = parseSize(parts[7], std::format("Time-series history for profile {}", parts[0]));
+
+                if (!parsed) {
+                    return std::unexpected{parsed.error()};
+                }
+
+                timeSeriesHistoryLimit = *parsed;
             }
 
             suite.profiles.push_back({parts[0], parts[1],
                                       parts.size() >= 3 && !parts[2].empty() ? std::optional{parts[2]} : std::nullopt,
                                       parts.size() >= 4 && !parts[3].empty() ? std::optional{parts[3]} : std::nullopt,
                                       parts.size() >= 5 && !parts[4].empty() ? std::optional{parts[4]} : std::nullopt,
-                                      parts.size() >= 6 && !parts[5].empty() ? std::optional{parts[5]} : std::nullopt});
+                                      parts.size() >= 6 && !parts[5].empty() ? std::optional{parts[5]} : std::nullopt,
+                                      parts.size() >= 7 && !parts[6].empty() ? std::optional{parts[6]} : std::nullopt,
+                                      timeSeriesHistoryLimit});
         } else {
             settings[key] = value;
         }
@@ -838,7 +852,9 @@ std::vector<BenchmarkRun> buildBenchmarkPlan(const BenchmarkSuite &suite, const 
                               profile.task, profile.clientRole.value_or(defaultRole), listenerDelay,
                               profile.eventsBatchLimit.value_or(defaultBatchLimit),
                               profile.aggregationPeriod.value_or(defaultAggregationPeriod),
-                              profile.clientImplementation.value_or("graal")});
+                              profile.clientImplementation.value_or("graal"),
+                              profile.timeSeriesPrefill.value_or(suite.timeSeriesPrefill),
+                              profile.timeSeriesHistoryLimit.value_or(suite.timeSeriesHistoryLimit)});
         }
     }
 
@@ -905,7 +921,7 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
                                      "duration={}\n",
                                      run.prefix, run.task, run.clientImplementation, run.clientRole,
                                      run.eventsBatchLimit, run.aggregationPeriod, run.listenerDelay,
-                                     suite.startupTimeout, suite.timeSeriesPrefill, suite.timeSeriesHistoryLimit,
+                                     suite.startupTimeout, run.timeSeriesPrefill, run.timeSeriesHistoryLimit,
                                      suite.warmup, suite.duration);
         }
 
@@ -938,7 +954,7 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
 
     std::ofstream manifest{runDirectory / "run-manifest.csv"};
     manifest << "profile,repetition,task,client_implementation,client_role,events_batch_limit,aggregation_period,"
-                "status,client_exit_code\n";
+                "time_series_prefill,time_series_history,status,client_exit_code\n";
     std::ofstream environment{runDirectory / "environment.txt"};
     environment << "started_utc=" << timestamp(false) << '\n';
     environment << "git_commit=" << gitCommit() << '\n';
@@ -975,8 +991,8 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
                 << "listener_delay=" << overrides.listenerDelay.value_or(suite.listenerDelay) << '\n'
                 << "events_batch_limit=" << overrides.eventsBatchLimit.value_or(suite.eventsBatchLimit) << '\n'
                 << "aggregation_period=" << overrides.aggregationPeriod.value_or(suite.aggregationPeriod) << '\n';
-    environment << "time_series_prefill=" << suite.timeSeriesPrefill << '\n'
-                << "time_series_history=" << suite.timeSeriesHistoryLimit << '\n';
+    environment << "time_series_prefill_default=" << suite.timeSeriesPrefill << '\n'
+                << "time_series_history_default=" << suite.timeSeriesHistoryLimit << '\n';
     environment.flush();
 
     bool failed{};
@@ -995,7 +1011,7 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
                                                  "--monitoring-stat",
                                                  suite.monitoringPeriod,
                                                  "--time-series-history",
-                                                 std::to_string(suite.timeSeriesHistoryLimit)};
+                                                 std::to_string(run.timeSeriesHistoryLimit)};
 
         if (run.clientImplementation == "legacy") {
             serverArguments.insert(serverArguments.end(), {"--task", run.task});
@@ -1043,7 +1059,7 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
                                            "--startup-timeout",
                                            suite.startupTimeout,
                                            "--time-series-prefill",
-                                           suite.timeSeriesPrefill,
+                                           run.timeSeriesPrefill,
                                            "--monitoring-stat",
                                            suite.monitoringPeriod,
                                            "--output",
@@ -1083,7 +1099,8 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
 
         manifest << csv(run.profile) << ',' << run.repetition << ',' << csv(run.task) << ',' << run.clientImplementation
                  << ',' << run.clientRole << ',' << run.eventsBatchLimit << ',' << run.aggregationPeriod << ','
-                 << status << ',' << clientExit << '\n';
+                 << run.timeSeriesPrefill << ',' << run.timeSeriesHistoryLimit << ',' << status << ',' << clientExit
+                 << '\n';
         manifest.flush();
 
         if (index + 1 < plan.size()) {

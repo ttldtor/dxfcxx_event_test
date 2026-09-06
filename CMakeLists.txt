@@ -49,8 +49,9 @@ if(MSVC AND DXFCXX_LINK_STATIC_RUNTIME)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-add_library(latency_core src/core.cpp src/monitoring.cpp src/runner.cpp)
+add_library(latency_core src/core.cpp src/monitoring.cpp src/resources.cpp src/runner.cpp)
 target_include_directories(latency_core PUBLIC include)
+target_link_libraries(latency_core PRIVATE process::process)
 target_compile_definitions(latency_core PRIVATE
         LATENCY_CXX_COMPILER_ID="${CMAKE_CXX_COMPILER_ID}"
         LATENCY_CXX_COMPILER_VERSION="${CMAKE_CXX_COMPILER_VERSION}"

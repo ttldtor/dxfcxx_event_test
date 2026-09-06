@@ -52,6 +52,12 @@ struct BenchmarkSuiteProfile {
 
     /// Optional client implementation: `graal` or `legacy`.
     std::optional<std::string> clientImplementation;
+
+    /// Optional delay before the TimeAndSale time-series subscription is added.
+    std::optional<std::string> timeSeriesPrefill;
+
+    /// Optional maximum retained TimeAndSale events per symbol.
+    std::optional<std::size_t> timeSeriesHistoryLimit;
 };
 
 /// Contains global settings and workload profiles parsed from a suite configuration.
@@ -154,6 +160,12 @@ struct BenchmarkRun {
 
     /// Client executable family selected for this run: `graal` or `legacy`.
     std::string clientImplementation;
+
+    /// Effective delay before the TimeAndSale time-series subscription is added.
+    std::string timeSeriesPrefill;
+
+    /// Effective maximum retained TimeAndSale events per symbol.
+    std::size_t timeSeriesHistoryLimit{};
 };
 
 /// Parses and validates a benchmark suite configuration.

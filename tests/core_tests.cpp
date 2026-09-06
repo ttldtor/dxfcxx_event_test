@@ -291,8 +291,8 @@ PROFILE=example|SUB:Q1
                                    repeatedFixture.path() / std::format("{}-client.log", profile));
         std::ofstream timeSeries{repeatedFixture.path() / std::format("{}-time-series.csv", profile)};
         timeSeries
-            << R"(from_time_ms,requested_symbols,observed_symbols,completed_symbols,snapshot_events,snapshot_callbacks,snapshot_begin,snapshot_end,snapshot_snip,snapshot_remove,duplicate_indices,premature_live_events,live_events,clock_anomalies,first_event_delay_ms,snapshot_duration_ms,first_live_after_snapshot_ms,live_latency_samples,live_latency_mean_us,live_latency_p50_us,live_latency_p90_us,live_latency_p99_us,live_latency_p999_us,live_latency_max_us
-1788307200000,1,1,1,200,2,1,1,0,1,0,0,100,0,1.5,3.0,0.5,100,100,90,150,200,250,300
+            << R"(from_time_ms,requested_symbols,observed_symbols,completed_symbols,snapshot_events,snapshot_callbacks,snapshot_begin,snapshot_end,snapshot_snip,snapshot_remove,duplicate_indices,premature_live_events,live_events,clock_anomalies,first_event_delay_ms,snapshot_duration_ms,first_live_relative_to_global_completion_ms,live_latency_samples,live_latency_mean_us,live_latency_p50_us,live_latency_p90_us,live_latency_p99_us,live_latency_p999_us,live_latency_max_us,cpu_core_percent,cpu_host_percent,rss_mean_bytes,rss_maximum_bytes,resource_samples
+1788307200000,1,1,1,200,2,1,1,0,1,0,0,100,0,1.5,3.0,0.5,100,100,90,150,200,250,300,20,2,104857600,125829120,100
 )";
         std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-server.log",
                                    repeatedFixture.path() / std::format("{}-server.log", legacyProfile));
@@ -387,6 +387,39 @@ TEST_CASE("invalid monitoring inputs are rejected") {
     CHECK_FALSE(analyzeMonitoringDirectory(invalidFixture.path(), 10s).has_value());
 }
 
+TEST_CASE("FEED correlation variance is not treated as delivery corruption") {
+    TemporaryDirectory fixture{std::filesystem::temp_directory_path() / "latency-feed-correlation-fixture"};
+    std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-server.log", fixture.path() / "feed-server.log");
+    std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-client.log", fixture.path() / "feed-client.log");
+
+    const auto writeSummary = [&](std::string_view role) {
+        std::ofstream summary{fixture.path() / "feed-summary.csv", std::ios::trunc};
+        summary
+            << R"(window_start_utc,window_end_utc,sample_kind,samples,expected_per_batch,endpoint_role,published,delivered,listener_deficit,excess_events,callbacks,clock_anomalies,missing_batches,pending_batches,min_us,mean_us,p50_us,p90_us,p95_us,p99_us,p999_us,max_us,outliers
+)";
+        constexpr auto interval = "2026-01-02T00:00:00.000000000Z,2026-01-02T23:59:00.000000000Z";
+        summary << std::format("{},event,999,1,{},1000,999,1,1,10,0,0,0,1,2,3,4,5,6,7,8,0\n", interval, role);
+        summary << std::format("{},event-total,999,1,{},1000,999,1,1,10,0,0,0,1,2,3,4,5,6,7,8,0\n", interval, role);
+        summary << std::format("{},batch-total,10,1,{},10,10,0,0,10,0,0,0,1,2,3,4,5,6,7,8,0\n", interval, role);
+    };
+
+    writeSummary("feed");
+    const auto feedAnalysis = analyzeMonitoringDirectory(fixture.path(), 10s);
+
+    if (!feedAnalysis) {
+        INFO(feedAnalysis.error());
+    }
+
+    REQUIRE(feedAnalysis.has_value());
+    CHECK(writeBenchmarkComparison(fixture.path(), *feedAnalysis).has_value());
+
+    writeSummary("stream-feed");
+    const auto streamFeedAnalysis = analyzeMonitoringDirectory(fixture.path(), 10s);
+
+    REQUIRE(streamFeedAnalysis.has_value());
+    CHECK_FALSE(writeBenchmarkComparison(fixture.path(), *streamFeedAnalysis).has_value());
+}
+
 TEST_CASE("the default isolate properties file enables nanosecond timestamps") {
     INFO("working directory: " << std::filesystem::current_path().string());
     CHECK(dxfcpp::System::getProperty("dxscheme.nanoTime") == "true");
@@ -429,7 +462,7 @@ COOLDOWN_SECONDS=0
 ADDRESS=127.0.0.1:7400
 LISTEN_ADDRESS=:7400
 PROFILE=first|SUB:Q1
-PROFILE=second|SUB:T2|stream-feed|1|10ms|legacy
+PROFILE=second|SUB:T2|stream-feed|1|10ms|legacy|3s|250
 )"};
     const auto suite = parseBenchmarkSuite(input);
 
@@ -446,6 +479,8 @@ PROFILE=second|SUB:T2|stream-feed|1|10ms|legacy
     CHECK(suite->profiles[1].eventsBatchLimit == "1");
     CHECK(suite->profiles[1].aggregationPeriod == "10ms");
     CHECK(suite->profiles[1].clientImplementation == "legacy");
+    CHECK(suite->profiles[1].timeSeriesPrefill == "3s");
+    CHECK(suite->profiles[1].timeSeriesHistoryLimit == 250);
 
     const auto plan =
         buildBenchmarkPlan(*suite, {.clientRole = "feed", .eventsBatchLimit = "375", .aggregationPeriod = "1ms"});
@@ -454,11 +489,15 @@ PROFILE=second|SUB:T2|stream-feed|1|10ms|legacy
     CHECK(plan[0].prefix == "first-r01");
     CHECK(plan[0].eventsBatchLimit == "375");
     CHECK(plan[0].aggregationPeriod == "1ms");
+    CHECK(plan[0].timeSeriesPrefill == "2s");
+    CHECK(plan[0].timeSeriesHistoryLimit == 1000);
     CHECK(plan[1].prefix == "second-r01");
     CHECK(plan[1].clientRole == "stream-feed");
     CHECK(plan[1].eventsBatchLimit == "1");
     CHECK(plan[1].clientImplementation == "legacy");
     CHECK(plan[1].aggregationPeriod == "10ms");
+    CHECK(plan[1].timeSeriesPrefill == "3s");
+    CHECK(plan[1].timeSeriesHistoryLimit == 250);
     CHECK(plan[2].prefix == "second-r02");
     CHECK(plan[3].prefix == "first-r02");
 
@@ -542,4 +581,23 @@ PROFILE=time-series|SUB:Q1;N1||||legacy
 
     REQUIRE_FALSE(invalidImplementation.has_value());
     CHECK(invalidImplementation.error().contains("not supported by the legacy client"));
+
+    std::istringstream invalidProfileHistory{R"(REPETITIONS=1
+WARMUP=1s
+DURATION=1s
+WINDOW=1s
+BATCH_TIMEOUT=1s
+STARTUP_TIMEOUT=1s
+MONITORING_PERIOD=1s
+CLIENT_ROLE=feed
+COOLDOWN_SECONDS=0
+ADDRESS=127.0.0.1:7400
+LISTEN_ADDRESS=:7400
+PROFILE=time-series|SUB:Q1;N1|||||2s|0
+)"};
+
+    const auto invalidHistory = parseBenchmarkSuite(invalidProfileHistory);
+
+    REQUIRE_FALSE(invalidHistory.has_value());
+    CHECK(invalidHistory.error().contains("Time-series history for profile time-series"));
 }

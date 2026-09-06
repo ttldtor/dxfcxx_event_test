@@ -1,0 +1,17 @@
+started_utc=2026-09-06T23:05:01Z
+git_commit=c1b73d027b476a93ff3038af610c5918ac354e35
+cxx_compiler=MSVC 19.51.36256.0
+dxfeed_graal_cxx_api_version=v8.0.0
+dxfeed_graal_native_sdk_version=3.2.13
+qd_version=3.353
+os=Windows
+architecture=x86_64
+processor_count=32
+binary_directory=C:\w\!active\dxfcxx_event_test\cmake-build-v8\Release
+suite_config=C:\w\!active\dxfcxx_event_test\tools\time-series-scaling.conf
+client_role=feed
+listener_delay=0
+events_batch_limit=optimal
+aggregation_period=0
+time_series_prefill_default=10500ms
+time_series_history_default=200

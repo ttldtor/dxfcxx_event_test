@@ -122,7 +122,7 @@ struct TimeSeriesRunRow {
     double clockAnomalies{};
     double firstEventDelayMs{};
     double snapshotDurationMs{};
-    double firstLiveAfterSnapshotMs{};
+    double firstLiveRelativeToGlobalCompletionMs{};
     double liveLatencySamples{};
     double liveLatencyMeanUs{};
     double liveLatencyP50Us{};
@@ -130,6 +130,11 @@ struct TimeSeriesRunRow {
     double liveLatencyP99Us{};
     double liveLatencyP999Us{};
     double liveLatencyMaximumUs{};
+    double cpuCorePercent{std::numeric_limits<double>::quiet_NaN()};
+    double cpuHostPercent{std::numeric_limits<double>::quiet_NaN()};
+    double rssMeanBytes{std::numeric_limits<double>::quiet_NaN()};
+    double rssMaximumBytes{std::numeric_limits<double>::quiet_NaN()};
+    double resourceSamples{std::numeric_limits<double>::quiet_NaN()};
     bool integrityOk{};
 };
 
@@ -746,10 +751,10 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
             row.nominalEventsPerSecond = 0;
         }
 
-        const auto exactDelivery = row.sampleKind == "batch-total" || row.listenerDeficit == 0;
+        const auto exactDelivery = row.sampleKind == "batch-total" || row.endpointRole == "feed" ||
+                                   (row.listenerDeficit == 0 && row.excessEvents == 0);
         row.integrityOk = batches > 0 && row.clockAnomalies == 0 && row.missingBatches == 0 &&
-                          row.pendingBatches == 0 && row.excessEvents == 0 &&
-                          (row.endpointRole == "feed" || exactDelivery);
+                          row.pendingBatches == 0 && exactDelivery;
     }
 
     return rows;
@@ -884,17 +889,41 @@ std::expected<TimeSeriesRunRow, std::string> readTimeSeries(const std::filesyste
 
         return parseNumber(columns[index]);
     };
-    constexpr std::array names{
-        "requested_symbols",    "observed_symbols",     "completed_symbols",     "snapshot_events",
-        "snapshot_callbacks",   "snapshot_begin",       "snapshot_end",          "snapshot_snip",
-        "snapshot_remove",      "duplicate_indices",    "premature_live_events", "live_events",
-        "clock_anomalies",      "first_event_delay_ms", "snapshot_duration_ms",  "first_live_after_snapshot_ms",
-        "live_latency_samples", "live_latency_mean_us", "live_latency_p50_us",   "live_latency_p90_us",
-        "live_latency_p99_us",  "live_latency_p999_us", "live_latency_max_us"};
+    const auto optionalNumber = [&](std::string_view name) -> std::expected<double, std::string> {
+        const auto found = std::ranges::find(headings, name);
+
+        if (found == headings.end()) {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+
+        const auto index = static_cast<std::size_t>(found - headings.begin());
+
+        if (index >= columns.size()) {
+            return std::unexpected(std::format("time-series result has no {} value: {}", name, path.string()));
+        }
+
+        return parseNumber(columns[index]);
+    };
+    constexpr std::array names{"requested_symbols",     "observed_symbols",
+                               "completed_symbols",     "snapshot_events",
+                               "snapshot_callbacks",    "snapshot_begin",
+                               "snapshot_end",          "snapshot_snip",
+                               "snapshot_remove",       "duplicate_indices",
+                               "premature_live_events", "live_events",
+                               "clock_anomalies",       "first_event_delay_ms",
+                               "snapshot_duration_ms",  "first_live_relative_to_global_completion_ms",
+                               "live_latency_samples",  "live_latency_mean_us",
+                               "live_latency_p50_us",   "live_latency_p90_us",
+                               "live_latency_p99_us",   "live_latency_p999_us",
+                               "live_latency_max_us"};
     std::array<double, names.size()> values{};
 
     for (std::size_t i = 0; i < names.size(); ++i) {
-        const auto value = number(names[i]);
+        auto value = number(names[i]);
+
+        if (!value && i == 15) {
+            value = number("first_live_after_snapshot_ms");
+        }
 
         if (!value) {
             return std::unexpected(value.error());
@@ -919,7 +948,7 @@ std::expected<TimeSeriesRunRow, std::string> readTimeSeries(const std::filesyste
     row.clockAnomalies = values[12];
     row.firstEventDelayMs = values[13];
     row.snapshotDurationMs = values[14];
-    row.firstLiveAfterSnapshotMs = values[15];
+    row.firstLiveRelativeToGlobalCompletionMs = values[15];
     row.liveLatencySamples = values[16];
     row.liveLatencyMeanUs = values[17];
     row.liveLatencyP50Us = values[18];
@@ -927,6 +956,23 @@ std::expected<TimeSeriesRunRow, std::string> readTimeSeries(const std::filesyste
     row.liveLatencyP99Us = values[20];
     row.liveLatencyP999Us = values[21];
     row.liveLatencyMaximumUs = values[22];
+    const auto cpuCorePercent = optionalNumber("cpu_core_percent");
+    const auto cpuHostPercent = optionalNumber("cpu_host_percent");
+    const auto rssMeanBytes = optionalNumber("rss_mean_bytes");
+    const auto rssMaximumBytes = optionalNumber("rss_maximum_bytes");
+    const auto resourceSamples = optionalNumber("resource_samples");
+
+    for (const auto *value : {&cpuCorePercent, &cpuHostPercent, &rssMeanBytes, &rssMaximumBytes, &resourceSamples}) {
+        if (!*value) {
+            return std::unexpected(value->error());
+        }
+    }
+
+    row.cpuCorePercent = *cpuCorePercent;
+    row.cpuHostPercent = *cpuHostPercent;
+    row.rssMeanBytes = *rssMeanBytes;
+    row.rssMaximumBytes = *rssMaximumBytes;
+    row.resourceSamples = *resourceSamples;
     row.integrityOk = row.requestedSymbols > 0 && row.completedSymbols == row.requestedSymbols &&
                       row.snapshotBegins == row.requestedSymbols &&
                       row.snapshotEnds + row.snapshotSnips == row.requestedSymbols && row.duplicateIndices == 0 &&
@@ -1291,22 +1337,32 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
                       "\"completed_symbols\",\"snapshot_events\",\"snapshot_callbacks\",\"snapshot_begin\","
                       "\"snapshot_end\",\"snapshot_snip\",\"snapshot_remove\",\"duplicate_indices\","
                       "\"premature_live_events\",\"live_events\",\"clock_anomalies\",\"first_event_delay_ms\","
-                      "\"snapshot_duration_ms\",\"first_live_after_snapshot_ms\",\"live_latency_samples\","
+                      "\"snapshot_duration_ms\",\"first_live_relative_to_global_completion_ms\","
+                      "\"live_latency_samples\","
                       "\"live_latency_mean_us\",\"live_latency_p50_us\",\"live_latency_p90_us\","
-                      "\"live_latency_p99_us\",\"live_latency_p999_us\",\"live_latency_max_us\",\"integrity_ok\"\n";
+                      "\"live_latency_p99_us\",\"live_latency_p999_us\",\"live_latency_max_us\","
+                      "\"cpu_core_percent\",\"cpu_host_percent\",\"rss_mean_bytes\",\"rss_maximum_bytes\","
+                      "\"resource_samples\",\"integrity_ok\"\n";
 
     for (const auto &row : timeSeriesRows) {
         writeColumn(timeSeriesRuns, row.profile, true);
         writeColumn(timeSeriesRuns, row.identity.scenario);
         writeColumn(timeSeriesRuns, static_cast<double>(row.identity.repetition));
 
-        for (const auto value :
-             {row.requestedSymbols,   row.observedSymbols,   row.completedSymbols,    row.snapshotEvents,
-              row.snapshotCallbacks,  row.snapshotBegins,    row.snapshotEnds,        row.snapshotSnips,
-              row.snapshotRemovals,   row.duplicateIndices,  row.prematureLiveEvents, row.liveEvents,
-              row.clockAnomalies,     row.firstEventDelayMs, row.snapshotDurationMs,  row.firstLiveAfterSnapshotMs,
-              row.liveLatencySamples, row.liveLatencyMeanUs, row.liveLatencyP50Us,    row.liveLatencyP90Us,
-              row.liveLatencyP99Us,   row.liveLatencyP999Us, row.liveLatencyMaximumUs}) {
+        for (const auto value : {row.requestedSymbols,     row.observedSymbols,
+                                 row.completedSymbols,     row.snapshotEvents,
+                                 row.snapshotCallbacks,    row.snapshotBegins,
+                                 row.snapshotEnds,         row.snapshotSnips,
+                                 row.snapshotRemovals,     row.duplicateIndices,
+                                 row.prematureLiveEvents,  row.liveEvents,
+                                 row.clockAnomalies,       row.firstEventDelayMs,
+                                 row.snapshotDurationMs,   row.firstLiveRelativeToGlobalCompletionMs,
+                                 row.liveLatencySamples,   row.liveLatencyMeanUs,
+                                 row.liveLatencyP50Us,     row.liveLatencyP90Us,
+                                 row.liveLatencyP99Us,     row.liveLatencyP999Us,
+                                 row.liveLatencyMaximumUs, row.cpuCorePercent,
+                                 row.cpuHostPercent,       row.rssMeanBytes,
+                                 row.rssMaximumBytes,      row.resourceSamples}) {
             writeColumn(timeSeriesRuns, value);
         }
 
@@ -1328,23 +1384,33 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
 
     writeComparisonHeader(timeSeriesComparison);
 
-    constexpr std::array timeSeriesMetrics{
-        std::pair{"snapshot_events", &TimeSeriesRunRow::snapshotEvents},
-        std::pair{"snapshot_callbacks", &TimeSeriesRunRow::snapshotCallbacks},
-        std::pair{"snapshot_duration_ms", &TimeSeriesRunRow::snapshotDurationMs},
-        std::pair{"first_live_after_snapshot_ms", &TimeSeriesRunRow::firstLiveAfterSnapshotMs},
-        std::pair{"live_events", &TimeSeriesRunRow::liveEvents},
-        std::pair{"live_latency_p50_us", &TimeSeriesRunRow::liveLatencyP50Us},
-        std::pair{"live_latency_p99_us", &TimeSeriesRunRow::liveLatencyP99Us},
-        std::pair{"live_latency_p999_us", &TimeSeriesRunRow::liveLatencyP999Us},
-        std::pair{"live_latency_max_us", &TimeSeriesRunRow::liveLatencyMaximumUs}};
+    constexpr std::array timeSeriesMetrics{std::pair{"snapshot_events", &TimeSeriesRunRow::snapshotEvents},
+                                           std::pair{"snapshot_callbacks", &TimeSeriesRunRow::snapshotCallbacks},
+                                           std::pair{"snapshot_duration_ms", &TimeSeriesRunRow::snapshotDurationMs},
+                                           std::pair{"first_live_relative_to_global_completion_ms",
+                                                     &TimeSeriesRunRow::firstLiveRelativeToGlobalCompletionMs},
+                                           std::pair{"live_events", &TimeSeriesRunRow::liveEvents},
+                                           std::pair{"live_latency_p50_us", &TimeSeriesRunRow::liveLatencyP50Us},
+                                           std::pair{"live_latency_p99_us", &TimeSeriesRunRow::liveLatencyP99Us},
+                                           std::pair{"live_latency_p999_us", &TimeSeriesRunRow::liveLatencyP999Us},
+                                           std::pair{"live_latency_max_us", &TimeSeriesRunRow::liveLatencyMaximumUs},
+                                           std::pair{"cpu_core_percent", &TimeSeriesRunRow::cpuCorePercent},
+                                           std::pair{"cpu_host_percent", &TimeSeriesRunRow::cpuHostPercent},
+                                           std::pair{"rss_mean_bytes", &TimeSeriesRunRow::rssMeanBytes},
+                                           std::pair{"rss_maximum_bytes", &TimeSeriesRunRow::rssMaximumBytes}};
 
     for (const auto &[scenario, rows] : timeSeriesScenarios) {
         for (const auto &[name, member] : timeSeriesMetrics) {
             std::vector<double> values;
 
             for (const auto *row : rows) {
-                values.push_back(row->*member);
+                if (std::isfinite(row->*member)) {
+                    values.push_back(row->*member);
+                }
+            }
+
+            if (values.empty()) {
+                continue;
             }
 
             writeComparisonRow(timeSeriesComparison, {scenario, "time-series", name, compareRuns(std::move(values))});
@@ -1561,8 +1627,8 @@ sampled by the cross-platform `ttldtor/Process` library during the measurement i
 The client adds a separate HISTORY subscription after the configured prefill. Snapshot and live values are medians
 across repetitions; the event range is the minimum and maximum complete snapshot size.
 
-| Scenario | Runs | Completed symbols | Snapshot events median (range) | Snapshot callbacks | Snapshot duration | SNIP | First live after snapshot | Live p99 | Integrity |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| Scenario | Runs | Completed symbols | Snapshot events median (range) | Snapshot callbacks | Snapshot duration | SNIP | First live vs global completion | Live p99 | CPU, one-core basis | RSS mean / maximum | Integrity |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
 )";
 
         for (const auto &[scenario, rows] : timeSeriesScenarios) {
@@ -1570,7 +1636,9 @@ across repetitions; the event range is the minimum and maximum complete snapshot
                 std::vector<double> values;
 
                 for (const auto *row : rows) {
-                    values.push_back(row->*member);
+                    if (std::isfinite(row->*member)) {
+                        values.push_back(row->*member);
+                    }
                 }
 
                 return compareRuns(std::move(values));
@@ -1580,24 +1648,35 @@ across repetitions; the event range is the minimum and maximum complete snapshot
             const auto callbacks = collect(&TimeSeriesRunRow::snapshotCallbacks);
             const auto duration = collect(&TimeSeriesRunRow::snapshotDurationMs);
             const auto snips = collect(&TimeSeriesRunRow::snapshotSnips);
-            const auto cutover = collect(&TimeSeriesRunRow::firstLiveAfterSnapshotMs);
+            const auto cutover = collect(&TimeSeriesRunRow::firstLiveRelativeToGlobalCompletionMs);
             const auto liveP99 = collect(&TimeSeriesRunRow::liveLatencyP99Us);
+            const auto cpuCore = collect(&TimeSeriesRunRow::cpuCorePercent);
+            const auto rssMean = collect(&TimeSeriesRunRow::rssMeanBytes);
+            const auto rssMaximum = collect(&TimeSeriesRunRow::rssMaximumBytes);
             const auto integrity = std::ranges::all_of(rows, [](const auto *row) {
                 return row->integrityOk;
             });
+            const auto resourceText = [](const RunComparison &value, double divisor, std::string_view suffix) {
+                return value.runs ? std::format("{:.3f}{}", value.median / divisor, suffix) : std::string{"n/a"};
+            };
 
             report << std::format("| {} | {} | {:.0f} | {:.0f} ({:.0f}–{:.0f}) | {:.0f} | {:.3f} ms | {:.0f} | "
-                                  "{:.3f} ms | {:.3f} us | {} |\n",
+                                  "{:.3f} ms | {:.3f} us | {} | {} / {} | {} |\n",
                                   scenario, rows.size(), completed.median, events.median, events.minimum,
                                   events.maximum, callbacks.median, duration.median, snips.median, cutover.median,
-                                  liveP99.median, integrity ? "OK" : "CHECK");
+                                  liveP99.median, resourceText(cpuCore, 1.0, "%"),
+                                  resourceText(rssMean, 1'048'576.0, " MiB"),
+                                  resourceText(rssMaximum, 1'048'576.0, " MiB"), integrity ? "OK" : "CHECK");
         }
 
         report << R"(
 
 Integrity requires every requested symbol to complete with `SNAPSHOT_END`, no duplicate indices, no live events
-before snapshot completion, no clock anomalies, and at least one measured live TimeAndSale event. `SNAPSHOT_SNIP`
+before that symbol's snapshot completion, no clock anomalies, and at least one measured live TimeAndSale event.
+`First live vs global completion` is negative when symbols that completed early start receiving live updates while
+snapshots for other symbols are still in progress; this is valid per-symbol snapshot-to-live overlap. `SNAPSHOT_SNIP`
 is reported separately because it is an expected bounded-history condition, not an integrity failure.
+CPU and RSS are sampled in the Graal client during the configured measurement interval, after the initial snapshot.
 
 )";
     }
@@ -1670,7 +1749,8 @@ correlated publications. `Listener deficit` is the corresponding observation gap
 QD-drop counter. In `FEED` mode, the gap may contain TICKER states superseded before listener delivery; endpoint
 buffering, `Dropped` records, incomplete publication correlation, and measurement boundaries must also be checked.
 Events without a delivered timestamp marker are reported separately as `uncorrelated_events` and excluded from the
-listener coverage.
+listener coverage. Because FEED does not preserve publication boundaries, listener deficit and per-marker excess
+are observations rather than integrity failures; STREAM_FEED still requires exact correlated delivery.
 )";
 
     report << "\nGenerated files: `latency-runs.csv`, `latency-comparison.csv`, `time-series-runs.csv`, "

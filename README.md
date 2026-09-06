@@ -201,9 +201,9 @@ flowchart LR
     L --> LL["Delivery rate and callback shape<br/>no common publish-time marker"]
 ```
 
-`latency_runner` can select the client per profile using the optional sixth field:
-`PROFILE=name|task|client-role|events-batch-limit|aggregation-period|client-implementation`. The implementation is
-`graal` by default, preserving existing suite files; use `legacy` only in builds configured with
+`latency_runner` can select the client and TimeAndSale setup per profile using optional fields:
+`PROFILE=name|task|client-role|events-batch-limit|aggregation-period|client-implementation|time-series-prefill|time-series-history`.
+The implementation is `graal` by default, preserving existing suite files; use `legacy` only in builds configured with
 `LATENCY_BUILD_LEGACY_CLIENT=ON`. Legacy runs write `<prefix>-delivery.csv`, and the analyzer produces separate
 `delivery-runs.csv` and `delivery-comparison.csv` files instead of presenting delivery counters as latency.
 
@@ -294,12 +294,14 @@ Use `--dry-run` to validate the suite and display all planned commands without s
 written below `benchmark-results/<UTC timestamp>/`. A full default run takes approximately two hours and twenty
 minutes plus any machine-dependent startup overhead.
 
-A `PROFILE` line may override the endpoint role, events batch limit, aggregation period, and client implementation
-for that profile using
-`PROFILE=name|task|client-role|events-batch-limit|aggregation-period|client-implementation`. Omitted fields inherit
-`CLIENT_ROLE`, `EVENTS_BATCH_LIMIT`, and `AGGREGATION_PERIOD` from the suite; the last two default to `optimal` and
-`0`, while the client implementation defaults to `graal`. Command-line `--events-batch-limit` and
-`--aggregation-period` provide suite-wide overrides for profiles that do not specify them.
+A `PROFILE` line may override the endpoint role, events batch limit, aggregation period, client implementation,
+TimeAndSale prefill, and server history limit for that profile using
+`PROFILE=name|task|client-role|events-batch-limit|aggregation-period|client-implementation|time-series-prefill|time-series-history`.
+Omitted fields inherit `CLIENT_ROLE`, `EVENTS_BATCH_LIMIT`, `AGGREGATION_PERIOD`, `TIME_SERIES_PREFILL`, and
+`TIME_SERIES_HISTORY` from the suite; batch limit and aggregation default to `optimal` and `0`, while the client
+implementation defaults to `graal`. Command-line `--events-batch-limit` and `--aggregation-period` provide
+suite-wide overrides for profiles that do not specify them. The run manifest records the effective prefill and
+history limit for every execution.
 
 A suite may describe its experiment with `EXPERIMENT_TITLE`, `EXPERIMENT_OBJECTIVE`, `EXPERIMENT_VARIABLE`,
 `EXPERIMENT_CONTROLS`, `EXPERIMENT_SUCCESS_CRITERIA`, and `EXPERIMENT_LIMITATIONS`. These settings are optional for
@@ -311,6 +313,14 @@ decision.
 [`tools/time-series-snapshot.conf`](tools/time-series-snapshot.conf) is the controlled TimeAndSale HISTORY experiment.
 It runs three repetitions at 150,000 total recurring events/s and reports initial snapshot completeness and flags,
 snapshot-to-live cutover, live TimeAndSale latency, regular ticker latency, QD monitoring, CPU, and RSS.
+
+[`tools/time-series-scaling.conf`](tools/time-series-scaling.conf) keeps the Q/T/E/S/N publication rate fixed and
+varies first the common subscribed symbol universe at a fixed 200-event history depth, then history depth at 375
+symbols. A common 10.5-second prefill fills every bounded server-history cap without changing the effective JVM/QD
+warm-up time between profiles. This separates cardinality scaling from depth scaling while preserving the same
+steady-state offered event rate. The
+TimeAndSale report includes Graal-client CPU and RSS sampled after snapshot completion during the measurement
+interval.
 
 For a short contract A/B, run `tools/conflation-diagnostic.conf` once with the default `feed` role and once with a
 `stream-feed` override. The task, symbol set, cadence, warm-up, and measurement duration remain identical:
@@ -593,7 +603,10 @@ comparison between the Graal CXX `STREAM_FEED` client and legacy C API default c
 regional fan-out comparison is in
 [`benchmark-results/20260906T154238Z/REPORT.md`](benchmark-results/20260906T154238Z/REPORT.md). The first complete
 TimeAndSale HISTORY snapshot-to-live run on CXX API v8.0.0 is in
-[`benchmark-results/20260906T213400Z/REPORT.md`](benchmark-results/20260906T213400Z/REPORT.md).
+[`benchmark-results/20260906T213400Z/REPORT.md`](benchmark-results/20260906T213400Z/REPORT.md). The controlled
+cardinality/depth result and its interpretation are in
+[`benchmark-results/20260906T230501Z/REPORT.md`](benchmark-results/20260906T230501Z/REPORT.md) and
+[`benchmark-results/TIME-SERIES-SCALING.md`](benchmark-results/TIME-SERIES-SCALING.md).
 
 The legacy C API does not implement the newer client-side FEED conflation mechanism, delivers events to its callback
 one at a time, and does not support `TextMessage`, which the Graal benchmark uses as the exact per-publication
