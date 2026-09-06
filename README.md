@@ -205,7 +205,12 @@ Run it from the same legacy-enabled build with:
 
 ```powershell
 .\build-legacy\Release\latency_runner.exe --binary-directory .\build-legacy\Release `
-    --config .\tools\legacy-api-comparison.conf
+    --config .\tools\regional-fanout.conf
+```
+
+```sh
+./build-legacy/latency_runner --binary-directory ./build-legacy \
+    --config ./tools/regional-fanout.conf
 ```
 
 ## Running a benchmark
@@ -559,7 +564,9 @@ The source-level distinction between normal `FEED` supersession and `STREAM_FEED
 of two CXX API, Native SDK, and QD release stacks is in
 [`benchmark-results/SDK-VERSION-COMPARISON.md`](benchmark-results/SDK-VERSION-COMPARISON.md). The repeated delivery
 comparison between the Graal CXX `STREAM_FEED` client and legacy C API default client is in
-[`benchmark-results/20260906T145936Z/REPORT.md`](benchmark-results/20260906T145936Z/REPORT.md).
+[`benchmark-results/20260906T145936Z/REPORT.md`](benchmark-results/20260906T145936Z/REPORT.md). The fixed-rate
+regional fan-out comparison is in
+[`benchmark-results/20260906T154238Z/REPORT.md`](benchmark-results/20260906T154238Z/REPORT.md).
 
 The legacy C API does not implement the newer client-side FEED conflation mechanism, delivers events to its callback
 one at a time, and does not support `TextMessage`, which the Graal benchmark uses as the exact per-publication

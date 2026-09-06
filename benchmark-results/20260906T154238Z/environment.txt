@@ -1,0 +1,15 @@
+started_utc=2026-09-06T15:42:38Z
+git_commit=e6b34f4ac0aca065b348813823a22e6377a606d4
+cxx_compiler=MSVC 19.51.36256.0
+dxfeed_graal_cxx_api_version=v7.0.0
+dxfeed_graal_native_sdk_version=3.2.0
+qd_version=3.347
+os=Windows
+architecture=x86_64
+processor_count=32
+binary_directory=C:\w\!active\dxfcxx_event_test\cmake-build-v7\Release
+suite_config=C:\w\!active\dxfcxx_event_test\tools\regional-fanout.conf
+client_role=stream-feed
+listener_delay=0
+events_batch_limit=optimal
+aggregation_period=0
