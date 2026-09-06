@@ -81,6 +81,17 @@ std::string_view eventSampleKind(latency::EventKind kind) {
     return "event-unknown";
 }
 
+/** Returns recurring events handled by the marker-correlated market subscription. */
+std::size_t regularEventCount(const latency::TaskPattern &pattern) {
+    std::size_t result{};
+
+    for (const auto kind : EVENT_KINDS) {
+        result += pattern.quantity(kind).value_or(0);
+    }
+
+    return result;
+}
+
 /** Records an operating-system termination request. */
 void onSignal(int) {
     interrupted.store(true);
@@ -91,6 +102,7 @@ struct Config {
     std::string address{"127.0.0.1:7400"};
     std::string task{"SUB:Q100"};
     std::chrono::milliseconds warmup{30s}, duration{5min}, window{10s}, batchTimeout{30s}, startupTimeout{30s};
+    std::chrono::milliseconds timeSeriesPrefill{2s};
     std::chrono::milliseconds listenerDelay{};
     std::chrono::milliseconds aggregationPeriod{};
     std::optional<std::chrono::milliseconds> monitoringStat{10s};
@@ -151,6 +163,7 @@ Config parseArgs(int argc, char **argv) {
   --warmup 30s             --duration 5m
   --window 10s             --batch-timeout 30s
   --startup-timeout 30s    initial Profile delivery timeout
+  --time-series-prefill 2s retain live TimeAndSale events before subscribing
   --listener-delay 1ms     delay each market-event callback; default 0
   --aggregation-period 1ms aggregate market notifications; default 0
   --events-batch-limit N   optimal, maximum, or a positive integer; default optimal
@@ -212,6 +225,8 @@ Config parseArgs(int argc, char **argv) {
                 config.batchTimeout = *duration;
             } else if (arg == "--startup-timeout") {
                 config.startupTimeout = *duration;
+            } else if (arg == "--time-series-prefill") {
+                config.timeSeriesPrefill = *duration;
             } else if (arg == "--listener-delay") {
                 config.listenerDelay = *duration;
             } else if (arg == "--aggregation-period") {
@@ -625,7 +640,7 @@ class Collector {
     /** Creates a collector and reserves storage for the expected workload. */
     Collector(const latency::TaskPattern &pattern, std::chrono::milliseconds timeout, std::size_t reserveWindowEvents,
               std::size_t reserveBatches, bool allowConflation)
-        : expectedPerBatch_(pattern.eventCount()), expectedByKind_([&pattern] {
+        : expectedPerBatch_(regularEventCount(pattern)), expectedByKind_([&pattern] {
               std::array<std::size_t, EVENT_KINDS.size()> result{};
 
               for (const auto kind : EVENT_KINDS) {
@@ -770,6 +785,200 @@ class Collector {
         std::lock_guard lock{mutex_};
 
         return activity_;
+    }
+};
+
+/** Measures the initial TimeAndSale snapshot, its cutover, and subsequent live-event latency. */
+class TimeSeriesTracker {
+    /** Tracks snapshot protocol state and seen indices for one symbol. */
+    struct SymbolState {
+        bool started{};
+        bool complete{};
+        std::unordered_set<std::int64_t> indices;
+    };
+
+    mutable std::mutex mutex_;
+    std::condition_variable snapshotCv_;
+    std::map<std::string, SymbolState> symbols_;
+    std::int64_t subscribedAtNs_{}, firstObservedNs_{}, completedAtNs_{}, firstLiveNs_{};
+    std::size_t expectedSymbols_{}, completedSymbols_{}, callbacks_{}, snapshotCallbacks_{};
+    std::size_t snapshotEvents_{}, snapshotBegins_{}, snapshotEnds_{}, snapshotSnips_{}, snapshotRemovals_{};
+    std::size_t liveEvents_{}, prematureLiveEvents_{}, duplicateIndices_{}, clockAnomalies_{};
+    bool measuring_{};
+    std::vector<std::int64_t> liveLatencies_;
+
+    public:
+    /** Marks the wall-clock instant immediately before time-series symbols are subscribed. */
+    void beginSnapshot(std::size_t expectedSymbols, std::int64_t subscribedAtNs) {
+        std::lock_guard lock{mutex_};
+
+        expectedSymbols_ = expectedSymbols;
+        subscribedAtNs_ = subscribedAtNs;
+    }
+
+    /** Processes one TimeAndSale listener callback and updates snapshot/live counters. */
+    void handle(const std::vector<std::shared_ptr<EventType>> &events) {
+        const auto observed = latency::unixNanosNow();
+        std::lock_guard lock{mutex_};
+        bool containsSnapshotEvent{};
+
+        ++callbacks_;
+
+        for (const auto &raw : events) {
+            const auto event = raw->sharedAs<TimeAndSale>();
+
+            if (!event) {
+                continue;
+            }
+
+            if (!firstObservedNs_) {
+                firstObservedNs_ = observed;
+            }
+
+            auto &state = symbols_[event->getEventSymbol()];
+            const auto flags = event->getEventFlags();
+            const auto snapshotBegin = (flags & IndexedEvent::SNAPSHOT_BEGIN) != 0;
+            const auto snapshotEnd = (flags & IndexedEvent::SNAPSHOT_END) != 0;
+            const auto snapshotSnip = (flags & IndexedEvent::SNAPSHOT_SNIP) != 0;
+            const auto remove = (flags & IndexedEvent::REMOVE_EVENT) != 0;
+            const auto inSnapshot = state.started && !state.complete;
+
+            if (snapshotBegin) {
+                state.started = true;
+                ++snapshotBegins_;
+            }
+
+            if (snapshotBegin || snapshotEnd || snapshotSnip || inSnapshot) {
+                containsSnapshotEvent = true;
+
+                if (remove) {
+                    ++snapshotRemovals_;
+                } else {
+                    ++snapshotEvents_;
+
+                    if (!state.indices.insert(event->getIndex()).second) {
+                        ++duplicateIndices_;
+                    }
+                }
+
+                if ((snapshotEnd || snapshotSnip) && !state.complete) {
+                    state.complete = true;
+                    ++completedSymbols_;
+                    snapshotEnds_ += snapshotEnd;
+                    snapshotSnips_ += snapshotSnip;
+
+                    if (completedSymbols_ == expectedSymbols_) {
+                        completedAtNs_ = observed;
+                        snapshotCv_.notify_all();
+                    }
+                }
+
+                continue;
+            }
+
+            if (!state.complete) {
+                ++prematureLiveEvents_;
+
+                continue;
+            }
+
+            ++liveEvents_;
+
+            if (!firstLiveNs_) {
+                firstLiveNs_ = observed;
+            }
+
+            if (measuring_) {
+                const auto latency = observed - event->getTimeNanos();
+
+                if (latency < 0) {
+                    ++clockAnomalies_;
+                } else {
+                    liveLatencies_.push_back(latency);
+                }
+            }
+        }
+
+        snapshotCallbacks_ += containsSnapshotEvent;
+    }
+
+    /** Waits for every requested symbol to finish with SNAPSHOT_END or SNAPSHOT_SNIP. */
+    bool waitForSnapshot(std::chrono::milliseconds timeout) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        std::unique_lock lock{mutex_};
+
+        while (!interrupted.load() && completedSymbols_ < expectedSymbols_) {
+            const auto wakeAt = std::min(deadline, std::chrono::steady_clock::now() + 100ms);
+
+            snapshotCv_.wait_until(lock, wakeAt);
+
+            if (std::chrono::steady_clock::now() >= deadline) {
+                break;
+            }
+        }
+
+        return completedSymbols_ >= expectedSymbols_;
+    }
+
+    /** Begins collecting steady-state live TimeAndSale latency samples. */
+    void beginMeasurement() {
+        std::lock_guard lock{mutex_};
+        measuring_ = true;
+        liveLatencies_.clear();
+    }
+
+    /** Stops collecting steady-state live TimeAndSale latency samples. */
+    void endMeasurement() {
+        std::lock_guard lock{mutex_};
+        measuring_ = false;
+    }
+
+    /** Writes one whole-run CSV row describing snapshot and live-delivery behavior. */
+    void writeReport(const std::filesystem::path &prefix, std::int64_t fromTimeMs) const {
+        std::lock_guard lock{mutex_};
+        auto path = prefix;
+
+        path += "-time-series.csv";
+
+        if (path.has_parent_path()) {
+            std::filesystem::create_directories(path.parent_path());
+        }
+
+        std::ofstream output{path};
+
+        if (!output) {
+            throw std::runtime_error(std::format("cannot open {}", path.string()));
+        }
+
+        const auto statistics = latency::calculateStatistics(liveLatencies_);
+        const auto millisecondsSince = [](std::int64_t end, std::int64_t start) {
+            return end && start ? static_cast<double>(end - start) / 1'000'000.0 : 0.0;
+        };
+
+        output << "from_time_ms,requested_symbols,observed_symbols,completed_symbols,snapshot_events,"
+                  "snapshot_callbacks,snapshot_begin,snapshot_end,snapshot_snip,snapshot_remove,duplicate_indices,"
+                  "premature_live_events,live_events,clock_anomalies,first_event_delay_ms,snapshot_duration_ms,"
+                  "first_live_after_snapshot_ms,live_latency_samples,live_latency_mean_us,live_latency_p50_us,"
+                  "live_latency_p90_us,live_latency_p99_us,live_latency_p999_us,live_latency_max_us\n";
+        output << fromTimeMs << ',' << expectedSymbols_ << ',' << symbols_.size() << ',' << completedSymbols_ << ','
+               << snapshotEvents_ << ',' << snapshotCallbacks_ << ',' << snapshotBegins_ << ',' << snapshotEnds_ << ','
+               << snapshotSnips_ << ',' << snapshotRemovals_ << ',' << duplicateIndices_ << ',' << prematureLiveEvents_
+               << ',' << liveEvents_ << ',' << clockAnomalies_ << ','
+               << millisecondsSince(firstObservedNs_, subscribedAtNs_) << ','
+               << millisecondsSince(completedAtNs_, subscribedAtNs_) << ','
+               << millisecondsSince(firstLiveNs_, completedAtNs_) << ',' << statistics.count << ','
+               << latency::nanosecondsToMicroseconds(statistics.mean) << ','
+               << latency::nanosecondsToMicroseconds(statistics.p50) << ','
+               << latency::nanosecondsToMicroseconds(statistics.p90) << ','
+               << latency::nanosecondsToMicroseconds(statistics.p99) << ','
+               << latency::nanosecondsToMicroseconds(statistics.p999) << ','
+               << latency::nanosecondsToMicroseconds(statistics.maximum) << '\n';
+        std::cout << std::format("TimeAndSale snapshot: symbols={}/{} events={} callbacks={} end={} snip={} "
+                                 "premature-live={} duplicates={} live={} latency-p99={:.3f} us. Wrote {}\n",
+                                 completedSymbols_, expectedSymbols_, snapshotEvents_, snapshotCallbacks_,
+                                 snapshotEnds_, snapshotSnips_, prematureLiveEvents_, duplicateIndices_, liveEvents_,
+                                 latency::nanosecondsToMicroseconds(statistics.p99), path.string())
+                  << std::flush;
     }
 };
 
@@ -925,8 +1134,10 @@ class Reporter {
     /** Opens all report files together so a run cannot proceed with only some outputs available. */
     Reporter(const std::filesystem::path &prefix, const latency::TaskPattern &pattern, ClientRole role,
              std::int32_t eventsBatchLimit, std::int64_t aggregationPeriodMs)
-        : runStart_(latency::unixNanosNow()), expectedEventsPerBatch_(pattern.eventCount()),
-          publishPeriodMs_(pattern.publishPeriod.count()), nominalEventsPerSecond_(pattern.nominalEventsPerSecond()),
+        : runStart_(latency::unixNanosNow()), expectedEventsPerBatch_(regularEventCount(pattern)),
+          publishPeriodMs_(pattern.publishPeriod.count()),
+          nominalEventsPerSecond_(static_cast<double>(regularEventCount(pattern)) * 1'000.0 /
+                                  pattern.publishPeriod.count()),
           initialProfilesExpected_(pattern.symbolCount()), endpointRole_(roleName(role)),
           eventsBatchLimit_(eventsBatchLimitName(eventsBatchLimit)), aggregationPeriodMs_(aggregationPeriodMs) {
         for (const auto kind : EVENT_KINDS) {
@@ -1087,11 +1298,16 @@ int main(int argc, char **argv) {
                 std::format("task parse error at {}: {}", pattern.error().position, pattern.error().message));
         }
 
-        const auto expected = pattern->eventCount();
+        if (pattern->quantity(latency::EventKind::TIME_AND_SALE).value_or(0) && config.role != ClientRole::FEED) {
+            throw std::invalid_argument("TimeAndSale time-series workloads require --role feed");
+        }
+
+        const auto expected = regularEventCount(*pattern);
         const auto windowBatches = std::max<std::size_t>(1, pattern->batchCount(config.window));
         const auto runBatches = std::max<std::size_t>(1, pattern->batchCount(config.duration));
         Collector collector{*pattern, config.batchTimeout, expected * windowBatches, runBatches,
                             config.role == ClientRole::FEED};
+        TimeSeriesTracker timeSeriesTracker;
 
         const auto endpointRole =
             config.role == ClientRole::FEED ? DXEndpoint::Role::FEED : DXEndpoint::Role::STREAM_FEED;
@@ -1112,13 +1328,28 @@ int main(int argc, char **argv) {
         addType(TradeETH::TYPE, latency::EventKind::TRADE_ETH);
         addType(Summary::TYPE, latency::EventKind::SUMMARY);
 
-        auto subscription = feed->createSubscription(eventTypes);
-        subscription->setAggregationPeriod(config.aggregationPeriod);
-        subscription->setEventsBatchLimit(config.eventsBatchLimit);
-        subscription->addEventListener([&collector, delay = config.listenerDelay](const auto &events) {
-            collector.handleMarket(events, delay);
-        });
-        subscription->addSymbols(pattern->marketSymbols());
+        std::shared_ptr<DXFeedSubscription> subscription;
+
+        if (!eventTypes.empty()) {
+            subscription = feed->createSubscription(eventTypes);
+            subscription->setAggregationPeriod(config.aggregationPeriod);
+            subscription->setEventsBatchLimit(config.eventsBatchLimit);
+            subscription->addEventListener([&collector, delay = config.listenerDelay](const auto &events) {
+                collector.handleMarket(events, delay);
+            });
+            subscription->addSymbols(pattern->marketSymbols());
+        }
+
+        std::shared_ptr<DXFeedTimeSeriesSubscription> timeSeriesSubscription;
+
+        if (pattern->quantity(latency::EventKind::TIME_AND_SALE).value_or(0)) {
+            timeSeriesSubscription = feed->createTimeSeriesSubscription(TimeAndSale::TYPE);
+            timeSeriesSubscription->setAggregationPeriod(config.aggregationPeriod);
+            timeSeriesSubscription->setEventsBatchLimit(config.eventsBatchLimit);
+            timeSeriesSubscription->addEventListener([&timeSeriesTracker](const auto &events) {
+                timeSeriesTracker.handle(events);
+            });
+        }
 
         auto profiles = feed->createSubscription(Profile::TYPE);
         profiles->addEventListener([&collector](const auto &events) {
@@ -1134,8 +1365,12 @@ int main(int argc, char **argv) {
 
         control->addSymbols(std::vector{config.task, timestampMarkerSymbol});
 
-        const auto effectiveAggregationPeriodMs = subscription->getAggregationPeriod().getTime();
-        Reporter reporter{config.output, *pattern, config.role, subscription->getEventsBatchLimit(),
+        const auto effectiveAggregationPeriodMs = subscription
+                                                      ? subscription->getAggregationPeriod().getTime()
+                                                      : timeSeriesSubscription->getAggregationPeriod().getTime();
+        const auto effectiveEventsBatchLimit =
+            subscription ? subscription->getEventsBatchLimit() : timeSeriesSubscription->getEventsBatchLimit();
+        Reporter reporter{config.output, *pattern, config.role, effectiveEventsBatchLimit,
                           effectiveAggregationPeriodMs};
 
         endpoint->connect(config.address);
@@ -1145,8 +1380,7 @@ int main(int argc, char **argv) {
                                  "Profile events on a separate subscription.\n",
                                  config.address, roleName(config.role), config.task, expected,
                                  pattern->publishPeriod.count(), pattern->nominalEventsPerSecond(),
-                                 config.listenerDelay.count(),
-                                 eventsBatchLimitName(subscription->getEventsBatchLimit()),
+                                 config.listenerDelay.count(), eventsBatchLimitName(effectiveEventsBatchLimit),
                                  effectiveAggregationPeriodMs, config.aggregationPeriod.count(), pattern->symbolCount())
                   << std::flush;
 
@@ -1167,7 +1401,40 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        std::cout << std::format("Initial Profile setup complete: {}/{}. Warm-up {} ms.\n", collector.profileCount(),
+        std::int64_t timeSeriesFromTimeMs{};
+
+        if (timeSeriesSubscription) {
+            timeSeriesFromTimeMs = latency::unixNanosNow() / 1'000'000;
+            std::cout << std::format("Initial Profile setup complete: {}/{}. Retaining TimeAndSale history for {} "
+                                     "ms before subscribing {} symbols.\n",
+                                     collector.profileCount(), pattern->symbolCount(), config.timeSeriesPrefill.count(),
+                                     pattern->symbolCount())
+                      << std::flush;
+
+            if (!waitFor(config.timeSeriesPrefill)) {
+                control->removeSymbols(config.task);
+                control->removeSymbols(timestampMarkerSymbol);
+                endpoint->closeAndAwaitTermination();
+
+                return 130;
+            }
+
+            timeSeriesTracker.beginSnapshot(pattern->symbolCount(), latency::unixNanosNow());
+            timeSeriesSubscription->setFromTime(timeSeriesFromTimeMs);
+            timeSeriesSubscription->addSymbols(pattern->symbols());
+
+            if (!timeSeriesTracker.waitForSnapshot(config.startupTimeout)) {
+                timeSeriesTracker.writeReport(config.output, timeSeriesFromTimeMs);
+                control->removeSymbols(config.task);
+                control->removeSymbols(timestampMarkerSymbol);
+                endpoint->closeAndAwaitTermination();
+                std::cerr << std::format("TimeAndSale snapshot timeout after {} ms\n", config.startupTimeout.count());
+
+                return 1;
+            }
+        }
+
+        std::cout << std::format("Initial setup complete: {}/{} Profiles. Warm-up {} ms.\n", collector.profileCount(),
                                  pattern->symbolCount(), config.warmup.count())
                   << std::flush;
 
@@ -1180,6 +1447,7 @@ int main(int argc, char **argv) {
         }
 
         collector.beginMeasurement();
+        timeSeriesTracker.beginMeasurement();
         const auto measurementStart = std::chrono::steady_clock::now();
         auto windowStartWall = latency::unixNanosNow();
         reporter.beginMeasurement(windowStartWall);
@@ -1224,6 +1492,7 @@ int main(int argc, char **argv) {
         }
 
         collector.endMeasurement();
+        timeSeriesTracker.endMeasurement();
         control->removeSymbols(timestampMarkerSymbol);
 
         const auto finalWall = latency::unixNanosNow();
@@ -1234,6 +1503,11 @@ int main(int argc, char **argv) {
         }
 
         reporter.final(collector.totals(), finalWall);
+
+        if (timeSeriesSubscription) {
+            timeSeriesTracker.writeReport(config.output, timeSeriesFromTimeMs);
+        }
+
         endpoint->closeAndAwaitTermination();
 
         return interrupted.load() ? 130 : 0;

@@ -88,6 +88,15 @@ TEST_CASE("task and duration parsing") {
     CHECK(cadence->nominalEventsPerSecond() == 150'000);
     CHECK(cadence->batchCount(25ms) == 3);
 
+    const auto timeAndSale = parseTask("SUB:Q375;N375@10ms#375");
+
+    REQUIRE(timeAndSale.has_value());
+    CHECK(timeAndSale->quantity(EventKind::TIME_AND_SALE) == 375);
+    CHECK(timeAndSale->eventCount() == 750);
+    CHECK(timeAndSale->symbols(EventKind::TIME_AND_SALE).front() == "SYM000");
+    CHECK(timeAndSale->symbols(EventKind::TIME_AND_SALE).back() == "SYM374");
+    CHECK(timeAndSale->toString() == "SUB:Q375;N375@10ms#375");
+
     const auto secondsCadence = parseTask("SUB:Q1@2s");
 
     REQUIRE(secondsCadence.has_value());
@@ -276,6 +285,11 @@ PROFILE=example|SUB:Q1
                                    repeatedFixture.path() / std::format("{}-server.log", profile));
         std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-client.log",
                                    repeatedFixture.path() / std::format("{}-client.log", profile));
+        std::ofstream timeSeries{repeatedFixture.path() / std::format("{}-time-series.csv", profile)};
+        timeSeries
+            << R"(from_time_ms,requested_symbols,observed_symbols,completed_symbols,snapshot_events,snapshot_callbacks,snapshot_begin,snapshot_end,snapshot_snip,snapshot_remove,duplicate_indices,premature_live_events,live_events,clock_anomalies,first_event_delay_ms,snapshot_duration_ms,first_live_after_snapshot_ms,live_latency_samples,live_latency_mean_us,live_latency_p50_us,live_latency_p90_us,live_latency_p99_us,live_latency_p999_us,live_latency_max_us
+1788307200000,1,1,1,200,2,1,1,0,1,0,0,100,0,1.5,3.0,0.5,100,100,90,150,200,250,300
+)";
         std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-server.log",
                                    repeatedFixture.path() / std::format("{}-server.log", legacyProfile));
         std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-client.log",
@@ -294,6 +308,8 @@ PROFILE=example|SUB:Q1
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "latency-runs.csv") > 0);
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "delivery-runs.csv") > 0);
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "delivery-comparison.csv") > 0);
+    CHECK(std::filesystem::file_size(repeatedFixture.path() / "time-series-runs.csv") > 0);
+    CHECK(std::filesystem::file_size(repeatedFixture.path() / "time-series-comparison.csv") > 0);
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "monitoring-comparison.csv") > 0);
 
     std::ifstream latencyRuns{repeatedFixture.path() / "latency-runs.csv"};
@@ -315,6 +331,8 @@ PROFILE=example|SUB:Q1
     CHECK(reportText.contains("**Limitations:** Does not represent a production network."));
     CHECK(reportText.contains("## Results"));
     CHECK(reportText.contains("## Legacy C API delivery"));
+    CHECK(reportText.contains("## TimeAndSale snapshot and live cutover"));
+    CHECK(reportText.contains("| example | 3 | 1 | 200 (200–200)"));
     CHECK(reportText.contains("| legacy-example | default | 3 | 400.000 | 400.000"));
     CHECK(reportText.contains("| example | stream-feed | unknown | 0.000 ms | 3 |"));
     CHECK(reportText.contains("Listener coverage median"));
@@ -468,4 +486,42 @@ PROFILE=example|SUB:Q1
 )"};
 
     CHECK_FALSE(parseBenchmarkSuite(incompleteMetadata).has_value());
+
+    std::istringstream streamFeedTimeSeries{R"(REPETITIONS=1
+WARMUP=1s
+DURATION=1s
+WINDOW=1s
+BATCH_TIMEOUT=1s
+STARTUP_TIMEOUT=1s
+MONITORING_PERIOD=1s
+CLIENT_ROLE=stream-feed
+COOLDOWN_SECONDS=0
+ADDRESS=127.0.0.1:7400
+LISTEN_ADDRESS=:7400
+PROFILE=time-series|SUB:Q1;N1
+)"};
+
+    const auto invalidRole = parseBenchmarkSuite(streamFeedTimeSeries);
+
+    REQUIRE_FALSE(invalidRole.has_value());
+    CHECK(invalidRole.error().contains("requires the feed client role"));
+
+    std::istringstream legacyTimeSeries{R"(REPETITIONS=1
+WARMUP=1s
+DURATION=1s
+WINDOW=1s
+BATCH_TIMEOUT=1s
+STARTUP_TIMEOUT=1s
+MONITORING_PERIOD=1s
+CLIENT_ROLE=feed
+COOLDOWN_SECONDS=0
+ADDRESS=127.0.0.1:7400
+LISTEN_ADDRESS=:7400
+PROFILE=time-series|SUB:Q1;N1||||legacy
+)"};
+
+    const auto invalidImplementation = parseBenchmarkSuite(legacyTimeSeries);
+
+    REQUIRE_FALSE(invalidImplementation.has_value());
+    CHECK(invalidImplementation.error().contains("not supported by the legacy client"));
 }

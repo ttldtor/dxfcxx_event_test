@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSL-1.0
 
 #include "latency/runner.hpp"
+#include "latency/core.hpp"
 
 #include <algorithm>
 #include <array>
@@ -698,6 +699,20 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
         suite.aggregationPeriod = found->second;
     }
 
+    if (const auto found = settings.find("TIME_SERIES_PREFILL"); found != settings.end()) {
+        suite.timeSeriesPrefill = found->second;
+    }
+
+    if (const auto found = settings.find("TIME_SERIES_HISTORY"); found != settings.end()) {
+        const auto historyLimit = parseSize(found->second, "TIME_SERIES_HISTORY");
+
+        if (!historyLimit) {
+            return std::unexpected{historyLimit.error()};
+        }
+
+        suite.timeSeriesHistoryLimit = *historyLimit;
+    }
+
     const std::array experimentSettings{
         std::pair{"EXPERIMENT_TITLE", &suite.experiment.title},
         std::pair{"EXPERIMENT_OBJECTIVE", &suite.experiment.objective},
@@ -731,6 +746,8 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
                                               "BATCH_TIMEOUT",
                                               "STARTUP_TIMEOUT",
                                               "MONITORING_PERIOD",
+                                              "TIME_SERIES_PREFILL",
+                                              "TIME_SERIES_HISTORY",
                                               "CLIENT_ROLE",
                                               "LISTENER_DELAY",
                                               "EVENTS_BATCH_LIMIT",
@@ -768,6 +785,28 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
         if (profile.clientImplementation && !validClientImplementation(*profile.clientImplementation)) {
             return std::unexpected{std::format("Invalid client implementation for profile {}: {}", profile.name,
                                                *profile.clientImplementation)};
+        }
+
+        const auto task = parseTask(profile.task);
+
+        if (!task) {
+            return std::unexpected{std::format("Invalid task for profile {} at {}: {}", profile.name,
+                                               task.error().position, task.error().message)};
+        }
+
+        if (task->quantity(EventKind::TIME_AND_SALE).value_or(0)) {
+            const auto role = profile.clientRole.value_or(suite.clientRole);
+            const auto implementation = profile.clientImplementation.value_or("graal");
+
+            if (role != "feed") {
+                return std::unexpected{
+                    std::format("TimeAndSale profile {} requires the feed client role", profile.name)};
+            }
+
+            if (implementation == "legacy") {
+                return std::unexpected{
+                    std::format("TimeAndSale profile {} is not supported by the legacy client", profile.name)};
+            }
         }
     }
 
@@ -862,10 +901,12 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
         for (const auto &run : plan) {
             std::cout << std::format("{} : {} ; client={} role={} events-batch-limit={} aggregation-period={} "
                                      "listener-delay={} "
-                                     "startup-timeout={} warmup={} duration={}\n",
+                                     "startup-timeout={} time-series-prefill={} time-series-history={} warmup={} "
+                                     "duration={}\n",
                                      run.prefix, run.task, run.clientImplementation, run.clientRole,
                                      run.eventsBatchLimit, run.aggregationPeriod, run.listenerDelay,
-                                     suite.startupTimeout, suite.warmup, suite.duration);
+                                     suite.startupTimeout, suite.timeSeriesPrefill, suite.timeSeriesHistoryLimit,
+                                     suite.warmup, suite.duration);
         }
 
         std::cout << std::format("Analyzer: {} --monitoring-period {}\n", analyzer.string(), suite.monitoringPeriod);
@@ -934,6 +975,8 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
                 << "listener_delay=" << overrides.listenerDelay.value_or(suite.listenerDelay) << '\n'
                 << "events_batch_limit=" << overrides.eventsBatchLimit.value_or(suite.eventsBatchLimit) << '\n'
                 << "aggregation_period=" << overrides.aggregationPeriod.value_or(suite.aggregationPeriod) << '\n';
+    environment << "time_series_prefill=" << suite.timeSeriesPrefill << '\n'
+                << "time_series_history=" << suite.timeSeriesHistoryLimit << '\n';
     environment.flush();
 
     bool failed{};
@@ -947,8 +990,12 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
         clientLog += "-client.log";
         std::cout << std::format("Starting {} with {} client ({})\n", run.prefix, run.clientImplementation, run.task)
                   << std::flush;
-        std::vector<std::string> serverArguments{"--address", suite.listenAddress, "--monitoring-stat",
-                                                 suite.monitoringPeriod};
+        std::vector<std::string> serverArguments{"--address",
+                                                 suite.listenAddress,
+                                                 "--monitoring-stat",
+                                                 suite.monitoringPeriod,
+                                                 "--time-series-history",
+                                                 std::to_string(suite.timeSeriesHistoryLimit)};
 
         if (run.clientImplementation == "legacy") {
             serverArguments.insert(serverArguments.end(), {"--task", run.task});
@@ -995,6 +1042,8 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
                                            suite.batchTimeout,
                                            "--startup-timeout",
                                            suite.startupTimeout,
+                                           "--time-series-prefill",
+                                           suite.timeSeriesPrefill,
                                            "--monitoring-stat",
                                            suite.monitoringPeriod,
                                            "--output",

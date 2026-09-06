@@ -1,9 +1,9 @@
 # dxFeed Graal C++ latency test
 
 This project is a two-process load-testing tool. The server publishes configurable batches of synthetic `Quote`,
-`Trade`, `TradeETH`, and `Summary` events and can publish an initial `Profile` state. The client measures the time
-between the server's `publishEvents` call and delivery to the C++ event listener. A third executable converts QD
-monitoring logs into machine-readable CSV files and compares repeated runs.
+`Trade`, `TradeETH`, `Summary`, and `TimeAndSale` events and can publish initial `Profile` and bounded TimeAndSale
+history. The client measures the time between the server's `publishEvents` call and delivery to the C++ event
+listener. A third executable converts QD monitoring logs into machine-readable CSV files and compares repeated runs.
 
 ## Native build
 
@@ -84,6 +84,9 @@ period and accepts `0` to disable it. For portable sub-20-ms scheduling, the gen
 before a deadline; high-frequency profiles can therefore consume one CPU core on the publisher. `--task` queues a
 task directly and is intended for clients, such as the legacy C API, that cannot use the `TextMessage` control
 channel. The queued task still waits for all required subscriptions before it starts.
+`--time-series-history` limits the retained TimeAndSale events per base symbol (default `1000`). When a time-series
+subscription arrives, the server publishes the retained range as a HISTORY snapshot with the standard snapshot
+flags, then continues publishing live updates.
 
 `latency_client` requests the task, discards the warm-up interval, and records latency during the measurement
 interval. Its main options are:
@@ -97,6 +100,7 @@ interval. Its main options are:
 | `--window` | `10s` | Size of each summary row's time window. |
 | `--batch-timeout` | `30s` | Maximum wait for an incomplete marker/event batch. |
 | `--startup-timeout` | `30s` | Maximum wait for all unique initial Profile symbols before warm-up. |
+| `--time-series-prefill` | `2s` | Time to retain live TimeAndSale events before adding the time-series symbols. |
 | `--listener-delay` | `0` | Artificial delay at the start of each market-event callback. |
 | `--events-batch-limit` | `optimal` | Maximum market events per native notification: `optimal`, `maximum`, or a positive integer. |
 | `--aggregation-period` | `0` | Per-subscription market notification aggregation period; `0` disables explicit aggregation. |
@@ -104,14 +108,14 @@ interval. Its main options are:
 | `--role` | `stream-feed` | Endpoint role: `stream-feed` preserves updates; `feed` permits conflation. |
 | `--output` | `latency` | Path and filename prefix for generated CSV files. |
 
-The task DSL is `SUB:<type><quantity>[;...][@<period>][#<symbols>][&<regional-sources>][~<shuffle-seed>]`: `Q`, `T`, `E`, and `S` mean
-Quote, Trade, TradeETH, and Summary. Each type may occur once and quantities must be positive. All configured types
-are recurring and contribute to the nominal event rate. The default period is `1s`. The optional final symbol count
-expands the subscribed instrument universe without changing the number of events published in each batch. It cannot
-be smaller than any configured event quantity. An optional regional-source count from 1 through 26 activates `&A`,
-`&B`, ... record keys in addition to the composite keys without changing the event count per publication. A final
-shuffle seed enables reproducible per-publication shuffling of the configured event-type blocks and regional-source
-selection.
+The task DSL is `SUB:<type><quantity>[;...][@<period>][#<symbols>][&<regional-sources>][~<shuffle-seed>]`: `Q`, `T`,
+`E`, `S`, and `N` mean Quote, Trade, TradeETH, Summary, and TimeAndSale. Each type may occur once and quantities must
+be positive. All configured types are recurring and contribute to the nominal event rate. The default period is
+`1s`. The optional final symbol count expands the subscribed instrument universe without changing the number of
+events published in each batch. It cannot be smaller than any configured event quantity. An optional regional-source
+count from 1 through 26 activates `&A`, `&B`, ... record keys in addition to the composite keys without changing the
+event count per publication. A final shuffle seed enables reproducible per-publication shuffling of the configured
+event-type blocks and regional-source selection.
 
 For example, `SUB:Q375;T375;E375;S375@10ms` publishes 1,500 recurring events every 10 ms (150,000 events/s).
 The common instrument universe contains 375 symbols named `SYM000` through `SYM374`; the numeric width is derived
@@ -130,6 +134,15 @@ It creates 10,125 market record keys per type (`375 × (composite + 26 regional 
 distributes each publication across them. Profiles remain one per base instrument, so this task still publishes 375
 initial Profiles. The Graal client explicitly subscribes to those composite and regional symbols; the default legacy
 C API client adds only the 375 base symbols because that API performs its own regional expansion.
+
+`N` has deliberately different subscription semantics. TimeAndSale uses the base symbols through a separate
+`DXFeedTimeSeriesSubscription`, requires the `FEED` endpoint role, and is excluded from marker-correlated Q/T/E/S
+delivery accounting. The client records `fromTime`, waits for `--time-series-prefill`, subscribes, verifies snapshot
+completion, and then measures live TimeAndSale latency. For example,
+`SUB:Q300;T300;E300;S300;N300@10ms#300~22805` publishes 1,500 recurring events every 10 ms (150,000 events/s), while
+the two-second default prefill creates approximately 200 retained TimeAndSale events per symbol before the snapshot.
+The exact snapshot size can be lower at the boundary or capped by `--time-series-history`; a truncated snapshot is
+reported through `SNAPSHOT_SNIP`.
 
 `latency_analyzer` is a standalone post-processing utility and does not connect to dxFeed. It reads a directory of
 latency summaries and captured QD logs, then writes `monitoring.csv` and `monitoring-summary.csv`. Pass
@@ -244,8 +257,9 @@ when the logs will be analyzed later:
 ./build/latency_analyzer --run-directory run --monitoring-period 10s
 ```
 
-PowerShell uses the same executable and options. `latency_analyzer` looks for matching `<profile>-summary.csv` or
-`<profile>-delivery.csv`, `<profile>-server.log`, and `<profile>-client.log` files. It writes every parsed interval to
+PowerShell uses the same executable and options. `latency_analyzer` looks for matching `<profile>-summary.csv`,
+`<profile>-time-series.csv`, or `<profile>-delivery.csv`, plus `<profile>-server.log` and `<profile>-client.log` files.
+It writes every parsed interval to
 `monitoring.csv` and profile/process aggregates for intervals wholly inside the measurement phase to
 `monitoring-summary.csv`. QD log timestamps have no UTC offset and are interpreted in the analyzer process's local
 time zone; analyze moved logs with the same `TZ` setting as the machine that produced them.
@@ -291,6 +305,10 @@ backward compatibility, but when one is present all six are required and must be
 from the preserved `suite.conf` and writes an `Experiment definition` section near the top of `REPORT.md`. Success
 criteria describe which measurements should be evaluated; they do not turn the report into an automatic pass/fail
 decision.
+
+[`tools/time-series-snapshot.conf`](tools/time-series-snapshot.conf) is the controlled TimeAndSale HISTORY experiment.
+It runs three repetitions at 150,000 total recurring events/s and reports initial snapshot completeness and flags,
+snapshot-to-live cutover, live TimeAndSale latency, regular ticker latency, QD monitoring, CPU, and RSS.
 
 For a short contract A/B, run `tools/conflation-diagnostic.conf` once with the default `feed` role and once with a
 `stream-feed` override. The task, symbol set, cadence, warm-up, and measurement duration remain identical:
@@ -534,6 +552,13 @@ sequence fields of event types that support them. However, `eventTime` is not tr
 connection, and `Quote` loses its sequence and fractional seconds with the tested scheme. An accompanying
 `TextMessage` with the payload `LATENCY_BATCH:<unix_ns>` therefore carries the exact publish timestamp in the same
 batch.
+
+dxFeed Graal CXX API v7.0.0 has a sequence-mask defect in `TimeAndSale::setSequence()`: its 32-bit complemented mask
+clears the upper 32 bits of the 64-bit event index and therefore corrupts a previously assigned timestamp. The
+benchmark server constructs the combined time/sequence index with an explicit 64-bit mask as a local workaround.
+Without it, HISTORY correctly rejects the corrupted events as older than the requested `fromTime`. The same setter
+pattern exists in several other indexed event implementations and should be fixed upstream before those setters are
+used for synthetic historical publication.
 
 `Trade` events are correlated with the marker by sequence, `Summary` events by a synthetic `dayId`, and `Quote`
 events by the seconds component of their exchange time. The last mapping is unambiguous at the fixed rate of one

@@ -23,7 +23,9 @@ enum class EventKind : char {
     /** A TradeETH event. */
     TRADE_ETH = 'E',
     /** A Summary event. */
-    SUMMARY = 'S'
+    SUMMARY = 'S',
+    /** A TimeAndSale time-series event. */
+    TIME_AND_SALE = 'N'
 };
 
 /** Describes one event type and its instrument count in a task pattern. */
@@ -120,7 +122,8 @@ struct ParseError {
 /**
  * Parses a subscription task in the `SUB:<type><quantity>[;...][@<period>][#<symbols>][&<regions>][~<seed>]` DSL.
  *
- * Supported type codes are `Q`, `T`, `E`, and `S`. Each type may occur at most once and its quantity must be positive.
+ * Supported type codes are `Q`, `T`, `E`, `S`, and `N` (`TimeAndSale`). Each type may occur at most once and its
+ * quantity must be positive.
  * An optional symbol count expands the subscribed universe without changing the events published per batch.
  * An optional regional-source count from 1 to 26 expands market-event record keys without changing the batch size.
  * An optional shuffle seed deterministically changes the order of event-type blocks for each publication.
@@ -150,7 +153,7 @@ bool isMarkerSymbol(std::string_view symbol);
  * Returns the display name of an event type.
  *
  * @param kind The event type.
- * @return `Quote`, `Trade`, `TradeETH`, or `Summary`.
+ * @return `Quote`, `Trade`, `TradeETH`, `Summary`, or `TimeAndSale`.
  */
 std::string eventKindName(EventKind kind);
 

@@ -26,6 +26,7 @@ namespace latency {
 namespace {
 constexpr std::string_view SUMMARY_SUFFIX = "-summary.csv";
 constexpr std::string_view DELIVERY_SUFFIX = "-delivery.csv";
+constexpr std::string_view TIME_SERIES_SUFFIX = "-time-series.csv";
 constexpr std::string_view NUMBER_PATTERN = R"([-+]?[0-9][0-9,]*(?:\.[0-9]+)?)";
 
 using Clock = std::chrono::system_clock;
@@ -100,6 +101,36 @@ struct DeliveryRunRow {
     double rssMaximumBytes{std::numeric_limits<double>::quiet_NaN()};
     double resourceSamples{std::numeric_limits<double>::quiet_NaN()};
     std::string contract;
+};
+
+/** Contains one TimeAndSale HISTORY snapshot and live-cutover result. */
+struct TimeSeriesRunRow {
+    std::string profile;
+    BenchmarkProfile identity;
+    double requestedSymbols{};
+    double observedSymbols{};
+    double completedSymbols{};
+    double snapshotEvents{};
+    double snapshotCallbacks{};
+    double snapshotBegins{};
+    double snapshotEnds{};
+    double snapshotSnips{};
+    double snapshotRemovals{};
+    double duplicateIndices{};
+    double prematureLiveEvents{};
+    double liveEvents{};
+    double clockAnomalies{};
+    double firstEventDelayMs{};
+    double snapshotDurationMs{};
+    double firstLiveAfterSnapshotMs{};
+    double liveLatencySamples{};
+    double liveLatencyMeanUs{};
+    double liveLatencyP50Us{};
+    double liveLatencyP90Us{};
+    double liveLatencyP99Us{};
+    double liveLatencyP999Us{};
+    double liveLatencyMaximumUs{};
+    bool integrityOk{};
 };
 
 /** Reads optional experiment metadata from the suite configuration preserved with a benchmark run. */
@@ -820,6 +851,90 @@ std::expected<DeliveryRunRow, std::string> readDelivery(const std::filesystem::p
                           *resourceSamples,  values[*contractIndex]};
 }
 
+/** Reads the TimeAndSale snapshot and live-cutover counters produced by one client execution. */
+std::expected<TimeSeriesRunRow, std::string> readTimeSeries(const std::filesystem::path &path,
+                                                            const std::string &profile) {
+    std::ifstream input{path};
+
+    if (!input) {
+        return std::unexpected(std::format("cannot read time-series result: {}", path.string()));
+    }
+
+    std::string headingsLine;
+    std::string valuesLine;
+
+    if (!std::getline(input, headingsLine) || !std::getline(input, valuesLine)) {
+        return std::unexpected(std::format("incomplete time-series result: {}", path.string()));
+    }
+
+    const auto headings = parseCsvRow(headingsLine);
+    const auto columns = parseCsvRow(valuesLine);
+    const auto number = [&](std::string_view name) -> std::expected<double, std::string> {
+        const auto found = std::ranges::find(headings, name);
+
+        if (found == headings.end()) {
+            return std::unexpected(std::format("time-series result has no {} column: {}", name, path.string()));
+        }
+
+        const auto index = static_cast<std::size_t>(found - headings.begin());
+
+        if (index >= columns.size()) {
+            return std::unexpected(std::format("time-series result has no {} value: {}", name, path.string()));
+        }
+
+        return parseNumber(columns[index]);
+    };
+    constexpr std::array names{
+        "requested_symbols",    "observed_symbols",     "completed_symbols",     "snapshot_events",
+        "snapshot_callbacks",   "snapshot_begin",       "snapshot_end",          "snapshot_snip",
+        "snapshot_remove",      "duplicate_indices",    "premature_live_events", "live_events",
+        "clock_anomalies",      "first_event_delay_ms", "snapshot_duration_ms",  "first_live_after_snapshot_ms",
+        "live_latency_samples", "live_latency_mean_us", "live_latency_p50_us",   "live_latency_p90_us",
+        "live_latency_p99_us",  "live_latency_p999_us", "live_latency_max_us"};
+    std::array<double, names.size()> values{};
+
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        const auto value = number(names[i]);
+
+        if (!value) {
+            return std::unexpected(value.error());
+        }
+
+        values[i] = *value;
+    }
+
+    TimeSeriesRunRow row{profile, parseBenchmarkProfile(profile)};
+    row.requestedSymbols = values[0];
+    row.observedSymbols = values[1];
+    row.completedSymbols = values[2];
+    row.snapshotEvents = values[3];
+    row.snapshotCallbacks = values[4];
+    row.snapshotBegins = values[5];
+    row.snapshotEnds = values[6];
+    row.snapshotSnips = values[7];
+    row.snapshotRemovals = values[8];
+    row.duplicateIndices = values[9];
+    row.prematureLiveEvents = values[10];
+    row.liveEvents = values[11];
+    row.clockAnomalies = values[12];
+    row.firstEventDelayMs = values[13];
+    row.snapshotDurationMs = values[14];
+    row.firstLiveAfterSnapshotMs = values[15];
+    row.liveLatencySamples = values[16];
+    row.liveLatencyMeanUs = values[17];
+    row.liveLatencyP50Us = values[18];
+    row.liveLatencyP90Us = values[19];
+    row.liveLatencyP99Us = values[20];
+    row.liveLatencyP999Us = values[21];
+    row.liveLatencyMaximumUs = values[22];
+    row.integrityOk = row.requestedSymbols > 0 && row.completedSymbols == row.requestedSymbols &&
+                      row.snapshotBegins == row.requestedSymbols &&
+                      row.snapshotEnds + row.snapshotSnips == row.requestedSymbols && row.duplicateIndices == 0 &&
+                      row.prematureLiveEvents == 0 && row.clockAnomalies == 0 && row.liveLatencySamples > 0;
+
+    return row;
+}
+
 /** Writes the common header used by comparison CSV files. */
 void writeComparisonHeader(std::ostream &output) {
     output << "\"scenario\",\"category\",\"metric\",\"runs\",\"minimum\",\"median\",\"maximum\"\n";
@@ -1032,6 +1147,7 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
                                                           const MonitoringAnalysis &analysis) {
     std::vector<LatencyRunRow> latencyRows;
     std::vector<DeliveryRunRow> deliveryRows;
+    std::vector<TimeSeriesRunRow> timeSeriesRows;
 
     for (const auto &entry : std::filesystem::directory_iterator{runDirectory}) {
         const auto filename = entry.path().filename().string();
@@ -1045,6 +1161,19 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
             }
 
             deliveryRows.push_back(std::move(*row));
+
+            continue;
+        }
+
+        if (entry.is_regular_file() && filename.ends_with(TIME_SERIES_SUFFIX)) {
+            const auto profile = filename.substr(0, filename.size() - TIME_SERIES_SUFFIX.size());
+            auto row = readTimeSeries(entry.path(), profile);
+
+            if (!row) {
+                return std::unexpected(row.error());
+            }
+
+            timeSeriesRows.push_back(std::move(*row));
 
             continue;
         }
@@ -1074,6 +1203,9 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
     });
     std::ranges::sort(deliveryRows, {}, [](const DeliveryRunRow &row) {
         return std::tuple{row.nominalEventsPerSecond, row.identity.scenario, row.identity.repetition};
+    });
+    std::ranges::sort(timeSeriesRows, {}, [](const TimeSeriesRunRow &row) {
+        return std::tuple{row.identity.scenario, row.identity.repetition};
     });
 
     std::ofstream deliveryRuns;
@@ -1146,6 +1278,76 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
             }
 
             writeComparisonRow(deliveryComparison, {scenario, "legacy-delivery", name, compareRuns(std::move(values))});
+        }
+    }
+
+    std::ofstream timeSeriesRuns;
+
+    if (auto opened = openOutput(timeSeriesRuns, runDirectory / "time-series-runs.csv"); !opened) {
+        return opened;
+    }
+
+    timeSeriesRuns << "\"profile\",\"scenario\",\"repetition\",\"requested_symbols\",\"observed_symbols\","
+                      "\"completed_symbols\",\"snapshot_events\",\"snapshot_callbacks\",\"snapshot_begin\","
+                      "\"snapshot_end\",\"snapshot_snip\",\"snapshot_remove\",\"duplicate_indices\","
+                      "\"premature_live_events\",\"live_events\",\"clock_anomalies\",\"first_event_delay_ms\","
+                      "\"snapshot_duration_ms\",\"first_live_after_snapshot_ms\",\"live_latency_samples\","
+                      "\"live_latency_mean_us\",\"live_latency_p50_us\",\"live_latency_p90_us\","
+                      "\"live_latency_p99_us\",\"live_latency_p999_us\",\"live_latency_max_us\",\"integrity_ok\"\n";
+
+    for (const auto &row : timeSeriesRows) {
+        writeColumn(timeSeriesRuns, row.profile, true);
+        writeColumn(timeSeriesRuns, row.identity.scenario);
+        writeColumn(timeSeriesRuns, static_cast<double>(row.identity.repetition));
+
+        for (const auto value :
+             {row.requestedSymbols,   row.observedSymbols,   row.completedSymbols,    row.snapshotEvents,
+              row.snapshotCallbacks,  row.snapshotBegins,    row.snapshotEnds,        row.snapshotSnips,
+              row.snapshotRemovals,   row.duplicateIndices,  row.prematureLiveEvents, row.liveEvents,
+              row.clockAnomalies,     row.firstEventDelayMs, row.snapshotDurationMs,  row.firstLiveAfterSnapshotMs,
+              row.liveLatencySamples, row.liveLatencyMeanUs, row.liveLatencyP50Us,    row.liveLatencyP90Us,
+              row.liveLatencyP99Us,   row.liveLatencyP999Us, row.liveLatencyMaximumUs}) {
+            writeColumn(timeSeriesRuns, value);
+        }
+
+        writeColumn(timeSeriesRuns, row.integrityOk ? std::string_view{"True"} : std::string_view{"False"});
+        timeSeriesRuns << '\n';
+    }
+
+    std::map<std::string, std::vector<const TimeSeriesRunRow *>> timeSeriesScenarios;
+
+    for (const auto &row : timeSeriesRows) {
+        timeSeriesScenarios[row.identity.scenario].push_back(&row);
+    }
+
+    std::ofstream timeSeriesComparison;
+
+    if (auto opened = openOutput(timeSeriesComparison, runDirectory / "time-series-comparison.csv"); !opened) {
+        return opened;
+    }
+
+    writeComparisonHeader(timeSeriesComparison);
+
+    constexpr std::array timeSeriesMetrics{
+        std::pair{"snapshot_events", &TimeSeriesRunRow::snapshotEvents},
+        std::pair{"snapshot_callbacks", &TimeSeriesRunRow::snapshotCallbacks},
+        std::pair{"snapshot_duration_ms", &TimeSeriesRunRow::snapshotDurationMs},
+        std::pair{"first_live_after_snapshot_ms", &TimeSeriesRunRow::firstLiveAfterSnapshotMs},
+        std::pair{"live_events", &TimeSeriesRunRow::liveEvents},
+        std::pair{"live_latency_p50_us", &TimeSeriesRunRow::liveLatencyP50Us},
+        std::pair{"live_latency_p99_us", &TimeSeriesRunRow::liveLatencyP99Us},
+        std::pair{"live_latency_p999_us", &TimeSeriesRunRow::liveLatencyP999Us},
+        std::pair{"live_latency_max_us", &TimeSeriesRunRow::liveLatencyMaximumUs}};
+
+    for (const auto &[scenario, rows] : timeSeriesScenarios) {
+        for (const auto &[name, member] : timeSeriesMetrics) {
+            std::vector<double> values;
+
+            for (const auto *row : rows) {
+                values.push_back(row->*member);
+            }
+
+            writeComparisonRow(timeSeriesComparison, {scenario, "time-series", name, compareRuns(std::move(values))});
         }
     }
 
@@ -1350,6 +1552,53 @@ into the composite plus 26 regional symbols. A task can publish a configured sub
 while keeping its recurring event rate fixed. CPU uses both a one-core basis and a host-normalized basis; RSS is
 sampled by the cross-platform `ttldtor/Process` library during the measurement interval.
 
+        )";
+    }
+
+    if (!timeSeriesScenarios.empty()) {
+        report << R"(## TimeAndSale snapshot and live cutover
+
+The client adds a separate HISTORY subscription after the configured prefill. Snapshot and live values are medians
+across repetitions; the event range is the minimum and maximum complete snapshot size.
+
+| Scenario | Runs | Completed symbols | Snapshot events median (range) | Snapshot callbacks | Snapshot duration | SNIP | First live after snapshot | Live p99 | Integrity |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+)";
+
+        for (const auto &[scenario, rows] : timeSeriesScenarios) {
+            const auto collect = [&](double TimeSeriesRunRow::*member) {
+                std::vector<double> values;
+
+                for (const auto *row : rows) {
+                    values.push_back(row->*member);
+                }
+
+                return compareRuns(std::move(values));
+            };
+            const auto completed = collect(&TimeSeriesRunRow::completedSymbols);
+            const auto events = collect(&TimeSeriesRunRow::snapshotEvents);
+            const auto callbacks = collect(&TimeSeriesRunRow::snapshotCallbacks);
+            const auto duration = collect(&TimeSeriesRunRow::snapshotDurationMs);
+            const auto snips = collect(&TimeSeriesRunRow::snapshotSnips);
+            const auto cutover = collect(&TimeSeriesRunRow::firstLiveAfterSnapshotMs);
+            const auto liveP99 = collect(&TimeSeriesRunRow::liveLatencyP99Us);
+            const auto integrity = std::ranges::all_of(rows, [](const auto *row) {
+                return row->integrityOk;
+            });
+
+            report << std::format("| {} | {} | {:.0f} | {:.0f} ({:.0f}–{:.0f}) | {:.0f} | {:.3f} ms | {:.0f} | "
+                                  "{:.3f} ms | {:.3f} us | {} |\n",
+                                  scenario, rows.size(), completed.median, events.median, events.minimum,
+                                  events.maximum, callbacks.median, duration.median, snips.median, cutover.median,
+                                  liveP99.median, integrity ? "OK" : "CHECK");
+        }
+
+        report << R"(
+
+Integrity requires every requested symbol to complete with `SNAPSHOT_END`, no duplicate indices, no live events
+before snapshot completion, no clock anomalies, and at least one measured live TimeAndSale event. `SNAPSHOT_SNIP`
+is reported separately because it is an expected bounded-history condition, not an integrity failure.
+
 )";
     }
 
@@ -1424,9 +1673,9 @@ Events without a delivered timestamp marker are reported separately as `uncorrel
 listener coverage.
 )";
 
-    report << "\nGenerated files: `latency-runs.csv`, `latency-comparison.csv`, `delivery-runs.csv`, "
-              "`delivery-comparison.csv`, `monitoring.csv`, `monitoring-summary.csv`, and "
-              "`monitoring-comparison.csv`.\n\n"
+    report << "\nGenerated files: `latency-runs.csv`, `latency-comparison.csv`, `time-series-runs.csv`, "
+              "`time-series-comparison.csv`, `delivery-runs.csv`, `delivery-comparison.csv`, `monitoring.csv`, "
+              "`monitoring-summary.csv`, and `monitoring-comparison.csv`.\n\n"
               "## Client monitoring\n\n"
               "The table shows medians across repetitions. Lag is in milliseconds; dropped is the largest per-run "
               "sum and buffer is the largest per-run high-water mark.\n\n"
@@ -1440,6 +1689,10 @@ listener coverage.
     }
 
     for (const auto &[scenario, rows] : deliveryScenarios) {
+        monitoringScenarios[scenario] = true;
+    }
+
+    for (const auto &[scenario, rows] : timeSeriesScenarios) {
         monitoringScenarios[scenario] = true;
     }
 
@@ -1499,7 +1752,11 @@ Low average CPU, buffer, and network utilization also do not exclude conflation:
 listener processing for the same record and symbol before the next monitoring sample.
 )";
 
-    if (std::ranges::any_of(latencyRows, [](const LatencyRunRow &row) {
+    if (std::ranges::any_of(latencyRows,
+                            [](const LatencyRunRow &row) {
+                                return !row.integrityOk;
+                            }) ||
+        std::ranges::any_of(timeSeriesRows, [](const TimeSeriesRunRow &row) {
             return !row.integrityOk;
         })) {
         return std::unexpected("one or more benchmark runs failed latency integrity checks; see REPORT.md");

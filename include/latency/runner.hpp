@@ -80,6 +80,12 @@ struct BenchmarkSuite {
     /// QD monitoring interval used by all benchmark processes.
     std::string monitoringPeriod;
 
+    /// Delay between task startup and TimeAndSale time-series subscription.
+    std::string timeSeriesPrefill{"2s"};
+
+    /// Maximum retained TimeAndSale events per symbol in the synthetic server.
+    std::size_t timeSeriesHistoryLimit{1'000};
+
     /// Default client endpoint role.
     std::string clientRole;
 

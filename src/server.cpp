@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
@@ -23,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -53,7 +55,10 @@ enum class SubscriptionKind {
     SUMMARY,
 
     /** Initial Profile subscription. */
-    PROFILE
+    PROFILE,
+
+    /** TimeAndSale time-series subscription. */
+    TIME_AND_SALE
 };
 
 /** Identifies a state transition consumed by the generator worker. */
@@ -80,6 +85,9 @@ struct Command {
     std::string text;
     SubscriptionKind subscription{};
     std::vector<std::string> symbols;
+
+    /** Requested time-series lower bound by base symbol. */
+    std::vector<std::pair<std::string, std::int64_t>> timeSeriesRequests;
 };
 
 /** Returns the storage index assigned to an observable subscription kind. */
@@ -100,6 +108,8 @@ std::string_view subscriptionKindName(SubscriptionKind kind) {
         return "Summary";
     case SubscriptionKind::PROFILE:
         return "Profile";
+    case SubscriptionKind::TIME_AND_SALE:
+        return "TimeAndSale";
     }
 
     return "Unknown";
@@ -116,6 +126,8 @@ SubscriptionKind subscriptionKind(latency::EventKind kind) {
         return SubscriptionKind::TRADE_ETH;
     case latency::EventKind::SUMMARY:
         return SubscriptionKind::SUMMARY;
+    case latency::EventKind::TIME_AND_SALE:
+        return SubscriptionKind::TIME_AND_SALE;
     }
 
     throw std::invalid_argument("unknown event kind");
@@ -127,7 +139,8 @@ class Generator {
     std::mutex mutex_;
     std::condition_variable cv_;
     std::deque<Command> commands_;
-    std::array<std::unordered_set<std::string>, 5> subscribedSymbols_;
+    std::array<std::unordered_set<std::string>, 6> subscribedSymbols_;
+    std::size_t timeSeriesHistoryLimit_{};
     bool traceSubscriptions_{};
     bool stopping_{};
     std::thread thread_;
@@ -139,6 +152,19 @@ class Generator {
         std::vector<std::shared_ptr<EventType>> events;
     };
 
+    /** Minimal immutable representation retained for reconstructing a TimeAndSale snapshot. */
+    struct TimeAndSaleRecord {
+        std::int64_t timeNanos{};
+        std::int32_t sequence{};
+        double price{};
+    };
+
+    /** Bounded history and truncation state for one synthetic base symbol. */
+    struct TimeAndSaleHistory {
+        std::deque<TimeAndSaleRecord> records;
+        bool truncated{};
+    };
+
     /** Holds the state and timing counters of the currently published task. */
     struct ActiveTask {
         std::string command;
@@ -147,7 +173,8 @@ class Generator {
         std::shared_ptr<TextMessage> marker;
         std::vector<std::shared_ptr<EventType>> publication;
         std::vector<std::size_t> poolOrder;
-        std::array<std::uint64_t, 4> lastBlockCounts{};
+        std::array<std::uint64_t, 6> lastBlockCounts{};
+        std::unordered_map<std::string, TimeAndSaleHistory> timeAndSaleHistory;
         std::uint64_t compositeEvents{}, regionalEvents{};
         std::uint32_t tick{};
         std::uint64_t publications{}, skippedDeadlines{};
@@ -178,6 +205,10 @@ class Generator {
         }
 
         return std::ranges::all_of(pending.pattern.items, [this, &pending](const auto &item) {
+            if (item.kind == latency::EventKind::TIME_AND_SALE) {
+                return true;
+            }
+
             return containsAll(subscriptionKind(item.kind), pending.marketSymbols);
         });
     }
@@ -211,20 +242,28 @@ class Generator {
 
             return event;
         }
+        case latency::EventKind::TIME_AND_SALE: {
+            auto event = std::make_shared<TimeAndSale>(symbol);
+            event->setSize(1);
+
+            return event;
+        }
         }
 
         throw std::invalid_argument("unknown event kind");
     }
 
-    // Allocate one stable event object per subscribed record key. Each publication selects a rotating subset.
+    /** Allocates one stable event object per subscribed record key for rotating publication selection. */
     static std::vector<EventPool> makeEventPools(const latency::TaskPattern &pattern) {
         std::vector<EventPool> pools;
-        const auto symbols = pattern.marketSymbols();
+        const auto marketSymbols = pattern.marketSymbols();
+        const auto baseSymbols = pattern.symbols();
 
         pools.reserve(pattern.items.size());
 
         for (const auto &item : pattern.items) {
             EventPool pool{item.kind, item.quantity, {}};
+            const auto &symbols = item.kind == latency::EventKind::TIME_AND_SALE ? baseSymbols : marketSymbols;
 
             pool.events.reserve(symbols.size());
 
@@ -260,10 +299,123 @@ class Generator {
         return value ^ (value >> 31U);
     }
 
+    /**
+     * Sets nanosecond time and sequence without truncating the high half of the TimeAndSale index.
+     *
+     * This works around the 32-bit complemented sequence mask in CXX API v7.0.0 and can be removed after the
+     * benchmark pins a release containing the upstream fix.
+     */
+    static void setTimeAndSequence(TimeAndSale &event, std::int64_t timeNanos, std::int32_t sequence) {
+        event.setTimeNanos(timeNanos);
+        event.setIndex((event.getIndex() & ~static_cast<std::int64_t>(TimeAndSale::MAX_SEQUENCE)) |
+                       static_cast<std::uint32_t>(sequence));
+    }
+
+    /** Reconstructs a publishable TimeAndSale event from a retained record. */
+    static std::shared_ptr<TimeAndSale> makeTimeAndSale(const std::string &symbol, const TimeAndSaleRecord &record) {
+        auto event = std::make_shared<TimeAndSale>(symbol);
+
+        setTimeAndSequence(*event, record.timeNanos, record.sequence);
+        event->setPrice(record.price);
+        event->setSize(1);
+
+        return event;
+    }
+
+    /** Appends one event to bounded per-symbol TimeAndSale history. */
+    void retainTimeAndSale(ActiveTask &active, const std::string &symbol, const TimeAndSaleRecord &record) const {
+        auto &history = active.timeAndSaleHistory[symbol];
+
+        history.records.push_back(record);
+
+        if (history.records.size() > timeSeriesHistoryLimit_) {
+            history.records.pop_front();
+            history.truncated = true;
+        }
+    }
+
+    /** Publishes retained TimeAndSale HISTORY snapshots for newly requested symbols. */
+    void publishTimeSeriesSnapshots(ActiveTask &active,
+                                    const std::vector<std::pair<std::string, std::int64_t>> &requests) {
+        std::vector<std::shared_ptr<EventType>> snapshot;
+        std::size_t actualEvents{};
+        std::size_t completeSnapshots{};
+        std::size_t snippedSnapshots{};
+        bool tracedRequest{};
+
+        for (const auto &[symbol, fromTime] : requests) {
+            const auto found = active.timeAndSaleHistory.find(symbol);
+            const auto isTruncated = found != active.timeAndSaleHistory.end() && found->second.truncated &&
+                                     !found->second.records.empty() &&
+                                     found->second.records.front().timeNanos / 1'000'000 > fromTime;
+            const auto first = snapshot.size();
+
+            if (traceSubscriptions_ && !tracedRequest && found != active.timeAndSaleHistory.end() &&
+                !found->second.records.empty()) {
+                const auto newest = makeTimeAndSale(symbol, found->second.records.back());
+                const auto oldest = makeTimeAndSale(symbol, found->second.records.front());
+                auto boundary = std::make_shared<TimeAndSale>(symbol);
+
+                boundary->setTime(fromTime);
+                std::cout << std::format("TimeAndSale snapshot range {}: from-ms={} boundary-index={} "
+                                         "oldest-ms={} oldest-index={} newest-ms={} newest-index={}\n",
+                                         symbol, fromTime, boundary->getIndex(), oldest->getTime(), oldest->getIndex(),
+                                         newest->getTime(), newest->getIndex())
+                          << std::flush;
+                tracedRequest = true;
+            }
+
+            if (found != active.timeAndSaleHistory.end()) {
+                for (auto record = found->second.records.rbegin(); record != found->second.records.rend(); ++record) {
+                    if (record->timeNanos / 1'000'000 < fromTime) {
+                        break;
+                    }
+
+                    snapshot.push_back(makeTimeAndSale(symbol, *record));
+                    ++actualEvents;
+                }
+            }
+
+            if (snapshot.size() > first) {
+                snapshot[first]->sharedAs<TimeAndSale>()->setEventFlags(
+                    static_cast<std::int32_t>(IndexedEvent::SNAPSHOT_BEGIN.getFlag()));
+            }
+
+            if (isTruncated && snapshot.size() > first) {
+                const auto last = snapshot.back()->sharedAs<TimeAndSale>();
+
+                last->setEventFlags(last->getEventFlags() | IndexedEvent::SNAPSHOT_SNIP);
+                ++snippedSnapshots;
+            } else {
+                auto boundary = std::make_shared<TimeAndSale>(symbol);
+                boundary->setTime(fromTime);
+                boundary->setEventFlags(IndexedEvent::REMOVE_EVENT | IndexedEvent::SNAPSHOT_END);
+
+                if (snapshot.size() == first) {
+                    boundary->setEventFlags(IndexedEvent::SNAPSHOT_BEGIN | IndexedEvent::REMOVE_EVENT |
+                                            IndexedEvent::SNAPSHOT_END);
+                }
+
+                snapshot.push_back(std::move(boundary));
+                ++completeSnapshots;
+            }
+        }
+
+        if (!snapshot.empty()) {
+            publisher_->publishEvents(snapshot);
+        }
+
+        std::cout << std::format("Published TimeAndSale snapshot: symbols={} actual-events={} complete={} snipped={} "
+                                 "wire-events={}\n",
+                                 requests.size(), actualEvents, completeSnapshots, snippedSnapshots, snapshot.size())
+                  << std::flush;
+    }
+
     void publish(ActiveTask &active) {
         const auto preparationStart = std::chrono::steady_clock::now();
         ++active.tick;
         const auto sequence = static_cast<std::int32_t>(active.tick % TextMessage::MAX_SEQUENCE);
+        const auto nowNs = latency::unixNanosNow();
 
         active.publication.clear();
         std::iota(active.poolOrder.begin(), active.poolOrder.end(), 0);
@@ -292,7 +444,8 @@ class Generator {
 
             for (std::size_t i = 0; i < pool.quantity; ++i) {
                 const auto baseIndex = (first + i) % baseSymbolCount;
-                const auto source = active.pattern.regionalSourceCount
+                const auto source = pool.kind == latency::EventKind::TIME_AND_SALE ? 0
+                                    : active.pattern.regionalSourceCount
                                         ? nextRandom(regionalRandom) % (active.pattern.regionalSourceCount + 1)
                                         : 0;
                 const auto &event = pool.events[source * baseSymbolCount + baseIndex];
@@ -322,13 +475,24 @@ class Generator {
                     summary->setDayHighPrice(101 + active.tick % 100);
                     summary->setDayLowPrice(98);
                     summary->setDayClosePrice(100 + active.tick % 100);
+                } else if (auto timeAndSale = event->sharedAs<TimeAndSale>()) {
+                    const auto price = 100.0 + active.tick % 100;
+
+                    setTimeAndSequence(*timeAndSale, nowNs, sequence);
+                    timeAndSale->setPrice(price);
+                    timeAndSale->setEventFlags(0);
+                    retainTimeAndSale(active, timeAndSale->getEventSymbol(), {nowNs, sequence, price});
+
+                    if (!subscribedSymbols_[subscriptionKindIndex(SubscriptionKind::TIME_AND_SALE)].contains(
+                            timeAndSale->getEventSymbol())) {
+                        continue;
+                    }
                 }
 
                 active.publication.push_back(event);
             }
         }
 
-        const auto nowNs = latency::unixNanosNow();
         active.marker->setTime(nowNs / 1'000'000);
         active.marker->setSequence(sequence);
         active.marker->setText(std::format("LATENCY_BATCH:{}", nowNs));
@@ -358,13 +522,14 @@ class Generator {
         std::cout << std::format("Generator summary {}: publications={} skipped-deadlines={} "
                                  "actual-batches/s={:.3f} actual-events/s={:.3f} "
                                  "preparation-ms(avg/max)={:.3f}/{:.3f} publish-ms(avg/max)={:.3f}/{:.3f} "
-                                 "routes(composite/regional)={}/{} last-blocks(Q/T/E/S)={}/{}/{}/{}\n",
+                                 "routes(composite/regional)={}/{} last-blocks(Q/T/E/S/N)={}/{}/{}/{}/{}\n",
                                  active.command, active.publications, active.skippedDeadlines, actualBatchesPerSecond,
                                  actualEventsPerSecond, milliseconds(active.preparationTotal) / publications,
                                  milliseconds(active.preparationMaximum),
                                  milliseconds(active.publishTotal) / publications, milliseconds(active.publishMaximum),
                                  active.compositeEvents, active.regionalEvents, active.lastBlockCounts[0],
-                                 active.lastBlockCounts[1], active.lastBlockCounts[2], active.lastBlockCounts[3])
+                                 active.lastBlockCounts[1], active.lastBlockCounts[2], active.lastBlockCounts[3],
+                                 active.lastBlockCounts[5])
                   << std::flush;
     }
 
@@ -503,6 +668,12 @@ class Generator {
                         subscribed.clear();
                     }
 
+                    if (active && command.type == CommandType::SYMBOLS_ADDED &&
+                        command.subscription == SubscriptionKind::TIME_AND_SALE &&
+                        !command.timeSeriesRequests.empty()) {
+                        publishTimeSeriesSnapshots(*active, command.timeSeriesRequests);
+                    }
+
                     if (traceSubscriptions_) {
                         const auto regional =
                             static_cast<std::size_t>(std::ranges::count_if(subscribed, [](const auto &symbol) {
@@ -542,8 +713,10 @@ class Generator {
 
     public:
     /** Starts the generator worker for a publisher and optionally logs observed symbol cardinality. */
-    explicit Generator(std::shared_ptr<DXPublisher> publisher, bool traceSubscriptions = false)
-        : publisher_(std::move(publisher)), traceSubscriptions_(traceSubscriptions), thread_([this] {
+    explicit Generator(std::shared_ptr<DXPublisher> publisher, std::size_t timeSeriesHistoryLimit,
+                       bool traceSubscriptions = false)
+        : publisher_(std::move(publisher)), timeSeriesHistoryLimit_(timeSeriesHistoryLimit),
+          traceSubscriptions_(traceSubscriptions), thread_([this] {
               run();
           }) {
     }
@@ -567,7 +740,7 @@ class Generator {
         {
             std::lock_guard lock{mutex_};
 
-            commands_.push_back(Command{type, std::move(text), {}, {}});
+            commands_.push_back(Command{type, std::move(text), {}, {}, {}});
         }
 
         cv_.notify_one();
@@ -577,19 +750,26 @@ class Generator {
     void enqueueSymbols(CommandType type, SubscriptionKind subscription,
                         const std::unordered_set<SymbolWrapper> &symbols) {
         std::vector<std::string> strings;
+        std::vector<std::pair<std::string, std::int64_t>> timeSeriesRequests;
 
         strings.reserve(symbols.size());
+        timeSeriesRequests.reserve(symbols.size());
 
         for (const auto &symbol : symbols) {
             if (symbol.isStringSymbol()) {
                 strings.push_back(symbol.asStringSymbol());
+            } else if (const auto timeSeries = symbol.asTimeSeriesSubscriptionSymbol()) {
+                const auto eventSymbol = timeSeries->getEventSymbol()->toStringUnderlying();
+
+                strings.push_back(eventSymbol);
+                timeSeriesRequests.emplace_back(eventSymbol, timeSeries->getFromTime());
             }
         }
 
         {
             std::lock_guard lock{mutex_};
 
-            commands_.push_back(Command{type, {}, subscription, std::move(strings)});
+            commands_.push_back(Command{type, {}, subscription, std::move(strings), std::move(timeSeriesRequests)});
         }
 
         cv_.notify_one();
@@ -600,7 +780,7 @@ class Generator {
         {
             std::lock_guard lock{mutex_};
 
-            commands_.push_back(Command{CommandType::SUBSCRIPTION_CLOSED, {}, subscription, {}});
+            commands_.push_back(Command{CommandType::SUBSCRIPTION_CLOSED, {}, subscription, {}, {}});
         }
 
         cv_.notify_one();
@@ -620,6 +800,9 @@ struct Config {
 
     /** Whether publisher-observable subscription cardinalities are logged. */
     bool traceSubscriptions{};
+
+    /** Maximum retained TimeAndSale events per symbol. */
+    std::size_t timeSeriesHistoryLimit{1'000};
 };
 
 /** Parses and validates benchmark-server command-line arguments. */
@@ -634,6 +817,7 @@ Config parseArgs(int argc, char **argv) {
   --address :7400          default :7400
   --task SUB:T1@100ms      queue a task without the TextMessage control channel
   --monitoring-stat 10s    0 disables QD statistics
+  --time-series-history N  retained TimeAndSale events per symbol; default 1000
   --trace-subscriptions    log observed composite and regional symbol counts
 )";
             std::exit(0);
@@ -670,6 +854,15 @@ Config parseArgs(int argc, char **argv) {
             }
 
             config.monitoringStat = *period;
+        } else if (arg == "--time-series-history") {
+            std::size_t parsed{};
+            const auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+
+            if (error != std::errc{} || ptr != value.data() + value.size() || parsed == 0) {
+                throw std::invalid_argument("time-series history must be a positive integer");
+            }
+
+            config.timeSeriesHistoryLimit = parsed;
         } else {
             throw std::invalid_argument(std::format("unknown argument: {}", arg));
         }
@@ -706,7 +899,7 @@ int main(int argc, char **argv) {
 
         const auto endpoint = endpointBuilder->build();
         const auto publisher = endpoint->getPublisher();
-        Generator generator{publisher, config.traceSubscriptions};
+        Generator generator{publisher, config.timeSeriesHistoryLimit, config.traceSubscriptions};
 
         /** Owns an observable subscription and the identifier of its registered listener. */
         struct ObservedSubscription {
@@ -737,6 +930,7 @@ int main(int argc, char **argv) {
         observe(SubscriptionKind::TRADE_ETH, TradeETH::TYPE);
         observe(SubscriptionKind::SUMMARY, Summary::TYPE);
         observe(SubscriptionKind::PROFILE, Profile::TYPE);
+        observe(SubscriptionKind::TIME_AND_SALE, TimeAndSale::TYPE);
 
         const auto controlSubscription = publisher->getSubscription(TextMessage::TYPE);
 

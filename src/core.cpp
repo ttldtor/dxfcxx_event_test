@@ -32,6 +32,8 @@ std::optional<EventKind> parseKind(char value) {
         return EventKind::TRADE_ETH;
     case 'S':
         return EventKind::SUMMARY;
+    case 'N':
+        return EventKind::TIME_AND_SALE;
     default:
         return std::nullopt;
     }
@@ -426,6 +428,8 @@ std::string eventKindName(EventKind kind) {
         return "TradeETH";
     case EventKind::SUMMARY:
         return "Summary";
+    case EventKind::TIME_AND_SALE:
+        return "TimeAndSale";
     }
 
     return "Unknown";
