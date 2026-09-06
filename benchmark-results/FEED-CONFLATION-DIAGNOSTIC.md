@@ -87,4 +87,5 @@ The aggregation-period controls further separate delayed notification from super
 75.627% at 1 ms and 68.917% at 10 ms, while otherwise identical STREAM_FEED controls preserve exactly 100% at both
 periods. STREAM_FEED still produces fewer, larger callbacks and higher latency, proving that aggregation is active
 without discarding stream records. See the
-[`STREAM_FEED aggregation-period control`](20260906T093904Z/AGGREGATION-STREAM-CONTROL.md).
+[`corrected STREAM_FEED aggregation-period control`](20260906T103104Z/AGGREGATION-STREAM-CONTROL.md). All nine
+rerun results have `Integrity = OK`; the previous boundary-correlation caveat no longer applies to this control.
