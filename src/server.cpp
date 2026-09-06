@@ -300,15 +300,11 @@ class Generator {
     }
 
     /**
-     * Sets nanosecond time and sequence without truncating the high half of the TimeAndSale index.
-     *
-     * This works around the 32-bit complemented sequence mask in CXX API v7.0.0 and can be removed after the
-     * benchmark pins a release containing the upstream fix.
+     * Sets the nanosecond timestamp before the sequence packed into the same TimeAndSale index.
      */
     static void setTimeAndSequence(TimeAndSale &event, std::int64_t timeNanos, std::int32_t sequence) {
         event.setTimeNanos(timeNanos);
-        event.setIndex((event.getIndex() & ~static_cast<std::int64_t>(TimeAndSale::MAX_SEQUENCE)) |
-                       static_cast<std::uint32_t>(sequence));
+        event.setSequence(sequence);
     }
 
     /** Reconstructs a publishable TimeAndSale event from a retained record. */

@@ -1,0 +1,2 @@
+from_time_ms,requested_symbols,observed_symbols,completed_symbols,snapshot_events,snapshot_callbacks,snapshot_begin,snapshot_end,snapshot_snip,snapshot_remove,duplicate_indices,premature_live_events,live_events,clock_anomalies,first_event_delay_ms,snapshot_duration_ms,first_live_after_snapshot_ms,live_latency_samples,live_latency_mean_us,live_latency_p50_us,live_latency_p90_us,live_latency_p99_us,live_latency_p999_us,live_latency_max_us
+1788730605675,300,300,300,63267,72,300,300,0,300,0,0,2689833,0,86.0166,142.357,-36.3006,1793400,3044.04,2710.6,3966.2,15419,24574.3,36735.5

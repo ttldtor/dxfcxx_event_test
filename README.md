@@ -10,10 +10,12 @@ listener. A third executable converts QD monitoring logs into machine-readable C
 The build requires CMake 3.21 or newer, a C++23 compiler, and network access for the pinned dxFeed Graal C++ API and
 Graal Native SDK archives.
 
-`LATENCY_DXFCXX_RELEASE` selects a supported release stack. It defaults to `v7.0.0`; `v5.0.0` is also pinned for
-controlled release comparisons. Use a separate build directory for every release because FetchContent selections
-are cached. The compiler, selected CXX API, its Native SDK, and QD dependency versions are recorded in each
-benchmark `environment.txt`.
+`LATENCY_DXFCXX_RELEASE` selects a supported release stack. It defaults to `v8.0.0`; `v5.0.0` and `v7.0.0` remain
+pinned for controlled historical comparisons. Treat v8.0.0 as a separate comparison point because it contains
+breaking corrections to packed event fields and native conversion and parsing behavior. It includes Graal Native
+SDK 3.2.13 and QD 3.353. Use a separate build directory for every release because FetchContent selections are
+cached. The compiler, selected CXX API, its Native SDK, and QD dependency versions are recorded in each benchmark
+`environment.txt`.
 
 On Linux or macOS, use a single-configuration build:
 
@@ -553,12 +555,10 @@ connection, and `Quote` loses its sequence and fractional seconds with the teste
 `TextMessage` with the payload `LATENCY_BATCH:<unix_ns>` therefore carries the exact publish timestamp in the same
 batch.
 
-dxFeed Graal CXX API v7.0.0 has a sequence-mask defect in `TimeAndSale::setSequence()`: its 32-bit complemented mask
-clears the upper 32 bits of the 64-bit event index and therefore corrupts a previously assigned timestamp. The
-benchmark server constructs the combined time/sequence index with an explicit 64-bit mask as a local workaround.
-Without it, HISTORY correctly rejects the corrupted events as older than the requested `fromTime`. The same setter
-pattern exists in several other indexed event implementations and should be fixed upstream before those setters are
-used for synthetic historical publication.
+dxFeed Graal CXX API v8.0.0 fixes packed-field setters, including `TimeAndSale::setSequence()`, so changing a sequence
+preserves the timestamp stored in the same 64-bit index. This is required by the synthetic HISTORY publisher: older
+versions could turn a current timestamp into a value near the Unix epoch, which HISTORY then correctly rejected as
+older than the requested `fromTime`. A regression test protects this ordering in the benchmark build.
 
 `Trade` events are correlated with the marker by sequence, `Summary` events by a synthetic `dayId`, and `Quote`
 events by the seconds component of their exchange time. The last mapping is unambiguous at the fixed rate of one
@@ -591,7 +591,9 @@ of two CXX API, Native SDK, and QD release stacks is in
 comparison between the Graal CXX `STREAM_FEED` client and legacy C API default client is in
 [`benchmark-results/20260906T145936Z/REPORT.md`](benchmark-results/20260906T145936Z/REPORT.md). The fixed-rate
 regional fan-out comparison is in
-[`benchmark-results/20260906T154238Z/REPORT.md`](benchmark-results/20260906T154238Z/REPORT.md).
+[`benchmark-results/20260906T154238Z/REPORT.md`](benchmark-results/20260906T154238Z/REPORT.md). The first complete
+TimeAndSale HISTORY snapshot-to-live run on CXX API v8.0.0 is in
+[`benchmark-results/20260906T213400Z/REPORT.md`](benchmark-results/20260906T213400Z/REPORT.md).
 
 The legacy C API does not implement the newer client-side FEED conflation mechanism, delivers events to its callback
 one at a time, and does not support `TextMessage`, which the Graal benchmark uses as the exact per-publication

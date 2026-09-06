@@ -7,6 +7,10 @@
 
 #include <doctest/doctest.h>
 
+// dxFeed Graal CXX API v8.0.0 EventTypeEnum.hpp uses this type without including its standard header.
+#include <unordered_map>
+
+#include <dxfeed_graal_cpp_api/event/market/TimeAndSale.hpp>
 #include <dxfeed_graal_cpp_api/system/System.hpp>
 
 #include <chrono>
@@ -386,6 +390,20 @@ TEST_CASE("invalid monitoring inputs are rejected") {
 TEST_CASE("the default isolate properties file enables nanosecond timestamps") {
     INFO("working directory: " << std::filesystem::current_path().string());
     CHECK(dxfcpp::System::getProperty("dxscheme.nanoTime") == "true");
+}
+
+TEST_CASE("TimeAndSale sequence preserves its packed timestamp") {
+    constexpr std::int64_t TIME_NANOS = 1'788'739'200'123'456'789;
+    dxfcpp::TimeAndSale event{"TEST"};
+
+    event.setTimeNanos(TIME_NANOS);
+
+    for (const auto sequence : {0, 42, static_cast<std::int32_t>(dxfcpp::TimeAndSale::MAX_SEQUENCE)}) {
+        event.setSequence(sequence);
+
+        CHECK(event.getSequence() == sequence);
+        CHECK(event.getTimeNanos() == TIME_NANOS);
+    }
 }
 
 TEST_CASE("benchmark suite parsing and rotating execution plan") {

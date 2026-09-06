@@ -65,7 +65,7 @@ jobs:
         run: >-
           ./build/Release/latency_runner.exe
           --binary-directory ./build/Release
-          --config ./tools/benchmark-suite.conf
+          --config ./tools/time-series-snapshot.conf
           --dry-run
       - name: Validate Unix benchmark runner
         if: runner.os != 'Windows'
@@ -73,7 +73,7 @@ jobs:
         run: >-
           ./build/latency_runner
           --binary-directory ./build
-          --config ./tools/benchmark-suite.conf
+          --config ./tools/time-series-snapshot.conf
           --dry-run
 
   linux-container:
@@ -168,9 +168,10 @@ jobs:
           docker run --rm --network latency-test \
             --mount "type=bind,source=$RUNNER_TEMP/latency-output,target=/work" \
             latency-test:ci latency_client --address latency-server:7400 \
-              --task "SUB:Q5000;T1;E1;S1" --role feed \
+              --task "SUB:Q100;T100;E100;S100;N100@10ms#100~22805" --role feed \
               --warmup 2s --duration 3s --window 1s \
-              --batch-timeout 2s --startup-timeout 30s --monitoring-stat 1s --output smoke \
+              --batch-timeout 2s --startup-timeout 30s --time-series-prefill 500ms \
+              --monitoring-stat 1s --output smoke \
             2>&1 | tee "$RUNNER_TEMP/latency-output/smoke-client.log"
           docker logs latency-server > "$RUNNER_TEMP/latency-output/smoke-server.log" 2>&1
           echo "::group::Latency server log"
@@ -186,12 +187,18 @@ jobs:
             smoke-server.log \
             smoke-analyzer.log \
             smoke-summary.csv \
+            smoke-time-series.csv \
             smoke-outliers.csv \
+            time-series-runs.csv \
+            time-series-comparison.csv \
             monitoring.csv \
-            monitoring-summary.csv; do
+            monitoring-summary.csv \
+            REPORT.md; do
             test -s "$RUNNER_TEMP/latency-output/$result"
           done
-          grep --fixed-strings --quiet "Initial Profile events received=5000/5000" \
+          grep --fixed-strings --quiet "Initial Profile events received=100/100" \
+            "$RUNNER_TEMP/latency-output/smoke-client.log"
+          grep --fixed-strings --quiet "TimeAndSale snapshot: symbols=100/100" \
             "$RUNNER_TEMP/latency-output/smoke-client.log"
       - name: Publish end-to-end results
         if: always()
@@ -239,11 +246,12 @@ jobs:
             echo '## Linux container end-to-end'
             echo
             echo "- Status: **$TEST_STATUS**"
-            echo '- Task: `SUB:Q5000;T1;E1;S1`; role: `feed`'
-            echo '- Warm-up: `2s`; measurement: `3s`; window: `1s`'
+            echo '- Task: `SUB:Q100;T100;E100;S100;N100@10ms#100~22805`; role: `feed`'
+            echo '- Time-series prefill: `500ms`; warm-up: `2s`; measurement: `3s`; window: `1s`'
             echo
           } >> "$GITHUB_STEP_SUMMARY"
           append_report 'Latency summary' "$RESULTS_DIR/smoke-summary.csv" csv
+          append_report 'TimeAndSale snapshot and live cutover' "$RESULTS_DIR/smoke-time-series.csv" csv
           append_report 'Monitoring summary' "$RESULTS_DIR/monitoring-summary.csv" csv
       - name: Upload end-to-end artifact
         if: always()

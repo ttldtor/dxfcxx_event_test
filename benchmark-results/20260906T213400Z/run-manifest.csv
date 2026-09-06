@@ -1,0 +1,4 @@
+profile,repetition,task,client_implementation,client_role,events_batch_limit,aggregation_period,status,client_exit_code
+"time-series-snapshot",1,"SUB:Q300;T300;E300;S300;N300@10ms#300~22805",graal,feed,optimal,0,passed,0
+"time-series-snapshot",2,"SUB:Q300;T300;E300;S300;N300@10ms#300~22805",graal,feed,optimal,0,passed,0
+"time-series-snapshot",3,"SUB:Q300;T300;E300;S300;N300@10ms#300~22805",graal,feed,optimal,0,passed,0
