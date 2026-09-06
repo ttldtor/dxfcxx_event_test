@@ -1,0 +1,7 @@
+profile,repetition,task,client_implementation,client_role,events_batch_limit,aggregation_period,status,client_exit_code
+"graal-stream",1,"SUB:Q375;T375;E375;S375@10ms#375~22805",graal,stream-feed,optimal,0,passed,0
+"legacy-default",1,"SUB:Q375;T375;E375;S375@10ms#375~22805",legacy,stream-feed,optimal,0,passed,0
+"legacy-default",2,"SUB:Q375;T375;E375;S375@10ms#375~22805",legacy,stream-feed,optimal,0,passed,0
+"graal-stream",2,"SUB:Q375;T375;E375;S375@10ms#375~22805",graal,stream-feed,optimal,0,passed,0
+"graal-stream",3,"SUB:Q375;T375;E375;S375@10ms#375~22805",graal,stream-feed,optimal,0,passed,0
+"legacy-default",3,"SUB:Q375;T375;E375;S375@10ms#375~22805",legacy,stream-feed,optimal,0,passed,0

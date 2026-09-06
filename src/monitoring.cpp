@@ -25,6 +25,7 @@
 namespace latency {
 namespace {
 constexpr std::string_view SUMMARY_SUFFIX = "-summary.csv";
+constexpr std::string_view DELIVERY_SUFFIX = "-delivery.csv";
 constexpr std::string_view NUMBER_PATTERN = R"([-+]?[0-9][0-9,]*(?:\.[0-9]+)?)";
 
 using Clock = std::chrono::system_clock;
@@ -77,6 +78,23 @@ struct LatencyRunRow {
     double maximumUs{};
     double outliers{};
     bool integrityOk{};
+};
+
+/** Contains one whole-run callback-delivery row emitted by the legacy C API client. */
+struct DeliveryRunRow {
+    std::string profile;
+    BenchmarkProfile identity;
+    double nominalEventsPerSecond{};
+    double callbacks{};
+    double recurringEvents{};
+    double quotes{};
+    double trades{};
+    double tradeEths{};
+    double summaries{};
+    double profiles{};
+    double maximumDataCount{};
+    double actualEventsPerSecond{};
+    std::string contract;
 };
 
 /** Reads optional experiment metadata from the suite configuration preserved with a benchmark run. */
@@ -332,18 +350,18 @@ std::string formatUtc(TimePoint value) {
     return output.str();
 }
 
-/** Reads the measurement boundaries and nominal rate from a latency summary. */
+/** Reads the measurement boundaries and nominal rate from a client result CSV. */
 std::expected<Measurement, std::string> readMeasurement(const std::filesystem::path &path) {
     std::ifstream input{path};
 
     if (!input) {
-        return std::unexpected(std::format("cannot read latency summary: {}", path.string()));
+        return std::unexpected(std::format("cannot read client result: {}", path.string()));
     }
 
     std::string line;
 
     if (!std::getline(input, line)) {
-        return std::unexpected(std::format("empty latency summary: {}", path.string()));
+        return std::unexpected(std::format("empty client result: {}", path.string()));
     }
 
     const auto headings = parseCsvRow(line);
@@ -363,7 +381,7 @@ std::expected<Measurement, std::string> readMeasurement(const std::filesystem::p
     const auto nominalIndex = indexOf("nominal_events_per_second");
 
     if (!startIndex || !endIndex || !kindIndex || !expectedIndex) {
-        return std::unexpected(std::format("latency summary has no required columns: {}", path.string()));
+        return std::unexpected(std::format("client result has no required columns: {}", path.string()));
     }
 
     std::optional<Measurement> measurement;
@@ -386,7 +404,7 @@ std::expected<Measurement, std::string> readMeasurement(const std::filesystem::p
         auto nominal = nominalIndex ? parseNumber(columns[*nominalIndex]) : expected;
 
         if (!start || !end || !expected || !nominal) {
-            return std::unexpected(std::format("invalid event row in latency summary: {}", path.string()));
+            return std::unexpected(std::format("invalid event row in client result: {}", path.string()));
         }
 
         if (!measurement) {
@@ -397,7 +415,7 @@ std::expected<Measurement, std::string> readMeasurement(const std::filesystem::p
     }
 
     if (!measurement) {
-        return std::unexpected(std::format("no event windows found in latency summary: {}", path.string()));
+        return std::unexpected(std::format("no event rows found in client result: {}", path.string()));
     }
 
     return *measurement;
@@ -701,6 +719,85 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
     return rows;
 }
 
+/** Reads the whole-run delivery counters produced by one legacy C API client execution. */
+std::expected<DeliveryRunRow, std::string> readDelivery(const std::filesystem::path &path, const std::string &profile) {
+    std::ifstream input{path};
+
+    if (!input) {
+        return std::unexpected(std::format("cannot read delivery result: {}", path.string()));
+    }
+
+    std::string headingsLine;
+    std::string valuesLine;
+
+    if (!std::getline(input, headingsLine) || !std::getline(input, valuesLine)) {
+        return std::unexpected(std::format("incomplete delivery result: {}", path.string()));
+    }
+
+    const auto headings = parseCsvRow(headingsLine);
+    const auto values = parseCsvRow(valuesLine);
+    const auto indexOf = [&](std::string_view name) -> std::expected<std::size_t, std::string> {
+        const auto found = std::ranges::find(headings, name);
+
+        if (found == headings.end()) {
+            return std::unexpected(std::format("delivery result has no {} column: {}", name, path.string()));
+        }
+
+        const auto index = static_cast<std::size_t>(found - headings.begin());
+
+        if (index >= values.size()) {
+            return std::unexpected(std::format("delivery result has no {} value: {}", name, path.string()));
+        }
+
+        return index;
+    };
+    const auto number = [&](std::string_view name) -> std::expected<double, std::string> {
+        const auto index = indexOf(name);
+
+        if (!index) {
+            return std::unexpected(index.error());
+        }
+
+        return parseNumber(values[*index]);
+    };
+    const auto nominal = number("nominal_events_per_second");
+    const auto callbacks = number("callbacks");
+    const auto recurring = number("recurring_events");
+    const auto quotes = number("quote");
+    const auto trades = number("trade");
+    const auto tradeEths = number("trade_eth");
+    const auto summaries = number("summary");
+    const auto profiles = number("profiles");
+    const auto maximumDataCount = number("maximum_data_count");
+    const auto actualRate = number("actual_events_per_second");
+    const auto contractIndex = indexOf("contract");
+
+    for (const auto *value : {&nominal, &callbacks, &recurring, &quotes, &trades, &tradeEths, &summaries, &profiles,
+                              &maximumDataCount, &actualRate}) {
+        if (!*value) {
+            return std::unexpected(value->error());
+        }
+    }
+
+    if (!contractIndex) {
+        return std::unexpected(contractIndex.error());
+    }
+
+    return DeliveryRunRow{profile,
+                          parseBenchmarkProfile(profile),
+                          *nominal,
+                          *callbacks,
+                          *recurring,
+                          *quotes,
+                          *trades,
+                          *tradeEths,
+                          *summaries,
+                          *profiles,
+                          *maximumDataCount,
+                          *actualRate,
+                          values[*contractIndex]};
+}
+
 /** Writes the common header used by comparison CSV files. */
 void writeComparisonHeader(std::ostream &output) {
     output << "\"scenario\",\"category\",\"metric\",\"runs\",\"minimum\",\"median\",\"maximum\"\n";
@@ -760,28 +857,30 @@ std::expected<MonitoringAnalysis, std::string> analyzeMonitoringDirectory(const 
         return std::unexpected(std::format("benchmark directory does not exist: {}", runDirectory.string()));
     }
 
-    std::vector<std::filesystem::path> summaries;
+    std::vector<std::filesystem::path> results;
 
     for (const auto &entry : std::filesystem::directory_iterator{runDirectory}) {
         const auto filename = entry.path().filename().string();
 
-        if (entry.is_regular_file() && filename.ends_with(SUMMARY_SUFFIX) && filename != "monitoring-summary.csv") {
-            summaries.push_back(entry.path());
+        if (entry.is_regular_file() && ((filename.ends_with(SUMMARY_SUFFIX) && filename != "monitoring-summary.csv") ||
+                                        filename.ends_with(DELIVERY_SUFFIX))) {
+            results.push_back(entry.path());
         }
     }
 
-    std::ranges::sort(summaries);
+    std::ranges::sort(results);
 
-    if (summaries.empty()) {
-        return std::unexpected(std::format("no profile summary files found in: {}", runDirectory.string()));
+    if (results.empty()) {
+        return std::unexpected(std::format("no client result files found in: {}", runDirectory.string()));
     }
 
     MonitoringAnalysis analysis;
 
-    for (const auto &summary : summaries) {
-        const auto filename = summary.filename().string();
-        const auto profile = filename.substr(0, filename.size() - SUMMARY_SUFFIX.size());
-        auto measurement = readMeasurement(summary);
+    for (const auto &result : results) {
+        const auto filename = result.filename().string();
+        const auto suffix = filename.ends_with(DELIVERY_SUFFIX) ? DELIVERY_SUFFIX : SUMMARY_SUFFIX;
+        const auto profile = filename.substr(0, filename.size() - suffix.size());
+        auto measurement = readMeasurement(result);
 
         if (!measurement) {
             return std::unexpected(measurement.error());
@@ -910,9 +1009,23 @@ std::expected<void, std::string> writeMonitoringAnalysis(const std::filesystem::
 std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem::path &runDirectory,
                                                           const MonitoringAnalysis &analysis) {
     std::vector<LatencyRunRow> latencyRows;
+    std::vector<DeliveryRunRow> deliveryRows;
 
     for (const auto &entry : std::filesystem::directory_iterator{runDirectory}) {
         const auto filename = entry.path().filename().string();
+
+        if (entry.is_regular_file() && filename.ends_with(DELIVERY_SUFFIX)) {
+            const auto profile = filename.substr(0, filename.size() - DELIVERY_SUFFIX.size());
+            auto row = readDelivery(entry.path(), profile);
+
+            if (!row) {
+                return std::unexpected(row.error());
+            }
+
+            deliveryRows.push_back(std::move(*row));
+
+            continue;
+        }
 
         if (!entry.is_regular_file() || !filename.ends_with(SUMMARY_SUFFIX) || filename == "monitoring-summary.csv") {
             continue;
@@ -937,6 +1050,65 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
     std::ranges::sort(latencyRows, {}, [](const LatencyRunRow &row) {
         return std::tuple{row.nominalEventsPerSecond, row.identity.scenario, row.identity.repetition, row.sampleKind};
     });
+    std::ranges::sort(deliveryRows, {}, [](const DeliveryRunRow &row) {
+        return std::tuple{row.nominalEventsPerSecond, row.identity.scenario, row.identity.repetition};
+    });
+
+    std::ofstream deliveryRuns;
+
+    if (auto opened = openOutput(deliveryRuns, runDirectory / "delivery-runs.csv"); !opened) {
+        return opened;
+    }
+
+    deliveryRuns << "\"profile\",\"scenario\",\"repetition\",\"nominal_events_per_second\",\"callbacks\","
+                    "\"recurring_events\",\"quote\",\"trade\",\"trade_eth\",\"summary\",\"profiles\","
+                    "\"maximum_data_count\",\"actual_events_per_second\",\"contract\"\n";
+
+    for (const auto &row : deliveryRows) {
+        writeColumn(deliveryRuns, row.profile, true);
+        writeColumn(deliveryRuns, row.identity.scenario);
+        writeColumn(deliveryRuns, static_cast<double>(row.identity.repetition));
+        writeColumn(deliveryRuns, row.nominalEventsPerSecond);
+        writeColumn(deliveryRuns, row.callbacks);
+        writeColumn(deliveryRuns, row.recurringEvents);
+        writeColumn(deliveryRuns, row.quotes);
+        writeColumn(deliveryRuns, row.trades);
+        writeColumn(deliveryRuns, row.tradeEths);
+        writeColumn(deliveryRuns, row.summaries);
+        writeColumn(deliveryRuns, row.profiles);
+        writeColumn(deliveryRuns, row.maximumDataCount);
+        writeColumn(deliveryRuns, row.actualEventsPerSecond);
+        writeColumn(deliveryRuns, row.contract);
+        deliveryRuns << '\n';
+    }
+
+    std::map<std::string, std::vector<const DeliveryRunRow *>> deliveryScenarios;
+
+    for (const auto &row : deliveryRows) {
+        deliveryScenarios[row.identity.scenario].push_back(&row);
+    }
+
+    std::ofstream deliveryComparison;
+
+    if (auto opened = openOutput(deliveryComparison, runDirectory / "delivery-comparison.csv"); !opened) {
+        return opened;
+    }
+
+    writeComparisonHeader(deliveryComparison);
+
+    for (const auto &[scenario, rows] : deliveryScenarios) {
+        for (const auto [name, member] : {std::pair{"actual_events_per_second", &DeliveryRunRow::actualEventsPerSecond},
+                                          std::pair{"callbacks", &DeliveryRunRow::callbacks},
+                                          std::pair{"maximum_data_count", &DeliveryRunRow::maximumDataCount}}) {
+            std::vector<double> values;
+
+            for (const auto *row : rows) {
+                values.push_back(row->*member);
+            }
+
+            writeComparisonRow(deliveryComparison, {scenario, "legacy-delivery", name, compareRuns(std::move(values))});
+        }
+    }
 
     std::ofstream runs;
 
@@ -1080,6 +1252,46 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
     }
 
     writeExperimentDefinition(report, *experiment);
+
+    if (!deliveryScenarios.empty()) {
+        report << R"(## Legacy C API delivery
+
+The legacy C API has no benchmark marker event, so these values describe callback delivery and callback shape; they
+are not timestamp-based E2E latency measurements. Rates are medians across repetitions.
+
+| Scenario | Contract | Runs | Nominal events/s | Observed events/s median (range) | Callbacks median | Maximum `data_count` |
+|---|---|---:|---:|---:|---:|---:|
+)";
+
+        for (const auto &[scenario, rows] : deliveryScenarios) {
+            std::vector<double> rates;
+            std::vector<double> callbacks;
+            std::vector<double> maximumDataCounts;
+
+            for (const auto *row : rows) {
+                rates.push_back(row->actualEventsPerSecond);
+                callbacks.push_back(row->callbacks);
+                maximumDataCounts.push_back(row->maximumDataCount);
+            }
+
+            const auto rate = compareRuns(std::move(rates));
+            const auto callback = compareRuns(std::move(callbacks));
+            const auto maximumDataCount = compareRuns(std::move(maximumDataCounts));
+            const auto *representative = rows.front();
+            report << std::format("| {} | {} | {} | {:.3f} | {:.3f} ({:.3f}–{:.3f}) | {:.3f} | {:.0f} |\n", scenario,
+                                  representative->contract, rate.runs, representative->nominalEventsPerSecond,
+                                  rate.median, rate.minimum, rate.maximum, callback.median, maximumDataCount.maximum);
+        }
+
+        report << R"(
+
+The synthetic server publishes only composite symbols. With the default legacy contract, the C API expands each
+Quote, Trade, TradeETH, and Summary subscription into the composite plus 26 regional symbols. Therefore subscription
+cardinality is intentionally much larger than the recurring composite event rate shown here.
+
+)";
+    }
+
     report << R"(## Results
 
 Run-level values are aggregated using the median; the range shows the minimum and maximum across independent repetitions. Latencies are in milliseconds.
@@ -1151,13 +1363,24 @@ Events without a delivered timestamp marker are reported separately as `uncorrel
 listener coverage.
 )";
 
-    report << "\nGenerated files: `latency-runs.csv`, `latency-comparison.csv`, `monitoring.csv`, "
-              "`monitoring-summary.csv`, and `monitoring-comparison.csv`.\n\n"
+    report << "\nGenerated files: `latency-runs.csv`, `latency-comparison.csv`, `delivery-runs.csv`, "
+              "`delivery-comparison.csv`, `monitoring.csv`, `monitoring-summary.csv`, and "
+              "`monitoring-comparison.csv`.\n\n"
               "## Client monitoring\n\n"
               "The table shows medians across repetitions. Lag is in milliseconds; dropped is the largest per-run "
               "sum and buffer is the largest per-run high-water mark.\n\n"
               "| Scenario | Read records/s | Read lag | CPU | Maximum buffer | Maximum dropped |\n"
               "|---|---:|---:|---:|---:|---:|\n";
+
+    std::map<std::string, bool> monitoringScenarios;
+
+    for (const auto &[scenario, rows] : scenarios) {
+        monitoringScenarios[scenario] = true;
+    }
+
+    for (const auto &[scenario, rows] : deliveryScenarios) {
+        monitoringScenarios[scenario] = true;
+    }
 
     const auto monitoringValue = [&](const std::string &scenario, std::string_view process, std::string_view metric) {
         const auto found = std::ranges::find_if(monitoringComparisons, [&](const ComparisonRow &row) {
@@ -1174,7 +1397,7 @@ listener coverage.
         return value.runs ? std::format("{:.3f}", value.maximum) : std::string{"n/a"};
     };
 
-    for (const auto &[scenario, rows] : scenarios) {
+    for (const auto &[scenario, unused] : monitoringScenarios) {
         const auto readRate = monitoringValue(scenario, "client", "read_data_rps_run_mean");
         const auto readLag = monitoringValue(scenario, "client", "read_data_lag_us_run_mean");
         const auto cpu = monitoringValue(scenario, "client", "cpu_percent_run_mean");
@@ -1194,7 +1417,7 @@ The table shows medians across repetitions. Lag is in milliseconds; dropped is t
 |---|---:|---:|---:|---:|---:|
 )";
 
-    for (const auto &[scenario, rows] : scenarios) {
+    for (const auto &[scenario, unused] : monitoringScenarios) {
         const auto writeRate = monitoringValue(scenario, "server", "write_data_rps_run_mean");
         const auto writeLag = monitoringValue(scenario, "server", "write_data_lag_us_run_mean");
         const auto cpu = monitoringValue(scenario, "server", "cpu_percent_run_mean");

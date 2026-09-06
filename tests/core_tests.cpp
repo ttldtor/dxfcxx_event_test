@@ -248,12 +248,22 @@ PROFILE=example|SUB:Q1
 
     for (const auto repetition : {"r01", "r02", "r03"}) {
         const auto profile = std::format("example-{}", repetition);
+        const auto legacyProfile = std::format("legacy-example-{}", repetition);
         std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-summary.csv",
                                    repeatedFixture.path() / std::format("{}-summary.csv", profile));
         std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-server.log",
                                    repeatedFixture.path() / std::format("{}-server.log", profile));
         std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-client.log",
                                    repeatedFixture.path() / std::format("{}-client.log", profile));
+        std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-server.log",
+                                   repeatedFixture.path() / std::format("{}-server.log", legacyProfile));
+        std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-client.log",
+                                   repeatedFixture.path() / std::format("{}-client.log", legacyProfile));
+        std::ofstream delivery{repeatedFixture.path() / std::format("{}-delivery.csv", legacyProfile)};
+        delivery
+            << R"("window_start_utc","window_end_utc","sample_kind","expected_per_batch","nominal_events_per_second","callbacks","recurring_events","quote","trade","trade_eth","summary","profiles","maximum_data_count","actual_events_per_second","contract"
+"2026-01-02T00:00:00.000Z","2026-01-02T23:59:00.000Z","event",4,400,1200,1200,300,300,300,300,0,1,400,"default"
+)";
     }
 
     const auto analysis = analyzeMonitoringDirectory(repeatedFixture.path(), 10s);
@@ -261,6 +271,8 @@ PROFILE=example|SUB:Q1
     REQUIRE(analysis.has_value());
     REQUIRE(writeBenchmarkComparison(repeatedFixture.path(), *analysis).has_value());
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "latency-runs.csv") > 0);
+    CHECK(std::filesystem::file_size(repeatedFixture.path() / "delivery-runs.csv") > 0);
+    CHECK(std::filesystem::file_size(repeatedFixture.path() / "delivery-comparison.csv") > 0);
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "monitoring-comparison.csv") > 0);
 
     std::ifstream latencyRuns{repeatedFixture.path() / "latency-runs.csv"};
@@ -281,6 +293,8 @@ PROFILE=example|SUB:Q1
         "**Evaluation criteria:** Compare listener coverage, latency, QD drops, and resource use."));
     CHECK(reportText.contains("**Limitations:** Does not represent a production network."));
     CHECK(reportText.contains("## Results"));
+    CHECK(reportText.contains("## Legacy C API delivery"));
+    CHECK(reportText.contains("| legacy-example | default | 3 | 400.000 | 400.000"));
     CHECK(reportText.contains("| example | stream-feed | unknown | 0.000 ms | 3 |"));
     CHECK(reportText.contains("Listener coverage median"));
     CHECK(reportText.contains("Listener deficit median"));
@@ -358,7 +372,7 @@ COOLDOWN_SECONDS=0
 ADDRESS=127.0.0.1:7400
 LISTEN_ADDRESS=:7400
 PROFILE=first|SUB:Q1
-PROFILE=second|SUB:T2|stream-feed|1|10ms
+PROFILE=second|SUB:T2|stream-feed|1|10ms|legacy
 )"};
     const auto suite = parseBenchmarkSuite(input);
 
@@ -374,6 +388,7 @@ PROFILE=second|SUB:T2|stream-feed|1|10ms
     CHECK(suite->profiles[1].clientRole == "stream-feed");
     CHECK(suite->profiles[1].eventsBatchLimit == "1");
     CHECK(suite->profiles[1].aggregationPeriod == "10ms");
+    CHECK(suite->profiles[1].clientImplementation == "legacy");
 
     const auto plan =
         buildBenchmarkPlan(*suite, {.clientRole = "feed", .eventsBatchLimit = "375", .aggregationPeriod = "1ms"});
@@ -385,6 +400,7 @@ PROFILE=second|SUB:T2|stream-feed|1|10ms
     CHECK(plan[1].prefix == "second-r01");
     CHECK(plan[1].clientRole == "stream-feed");
     CHECK(plan[1].eventsBatchLimit == "1");
+    CHECK(plan[1].clientImplementation == "legacy");
     CHECK(plan[1].aggregationPeriod == "10ms");
     CHECK(plan[2].prefix == "second-r02");
     CHECK(plan[3].prefix == "first-r02");

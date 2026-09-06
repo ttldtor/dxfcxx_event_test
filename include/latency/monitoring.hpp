@@ -136,9 +136,9 @@ BenchmarkProfile parseBenchmarkProfile(std::string_view profile);
 RunComparison compareRuns(std::vector<double> values);
 
 /**
- * Analyzes matching latency summaries and QD server/client logs in a benchmark directory.
+ * Analyzes matching latency or delivery results and QD server/client logs in a benchmark directory.
  *
- * @param runDirectory Directory containing `<profile>-summary.csv` and corresponding log files.
+ * @param runDirectory Directory containing `<profile>-summary.csv` or `<profile>-delivery.csv` and matching logs.
  * @param monitoringPeriod Configured QD monitoring period, used for the first interval in each log.
  * @return Parsed samples and aggregates, or a human-readable error.
  */
@@ -156,7 +156,7 @@ std::expected<void, std::string> writeMonitoringAnalysis(const std::filesystem::
                                                          const MonitoringAnalysis &analysis);
 
 /**
- * Writes latency and monitoring repetition comparisons and a concise Markdown report.
+ * Writes latency, delivery, and monitoring repetition comparisons and a concise Markdown report.
  *
  * @param runDirectory Destination benchmark directory containing the latency summaries.
  * @param analysis Monitoring analysis associated with the same benchmark executions.

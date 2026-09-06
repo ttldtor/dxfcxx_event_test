@@ -92,6 +92,11 @@ bool validRole(std::string_view role) {
     return role == "feed" || role == "stream-feed";
 }
 
+/// Checks whether a client implementation is supported by the benchmark.
+bool validClientImplementation(std::string_view implementation) {
+    return implementation == "graal" || implementation == "legacy";
+}
+
 /// Escapes one field for RFC 4180-compatible CSV output.
 std::string csv(std::string_view value) {
     std::string escaped;
@@ -540,7 +545,7 @@ std::expected<int, std::string> runAndWait(const std::filesystem::path &executab
 
 /// Renames incomplete client CSV files so the analyzer ignores them.
 void makePartial(const std::filesystem::path &prefix) {
-    for (const auto suffix : {"-summary.csv", "-outliers.csv", "-callbacks.csv"}) {
+    for (const auto suffix : {"-summary.csv", "-outliers.csv", "-callbacks.csv", "-delivery.csv"}) {
         auto source = prefix;
         source += suffix;
 
@@ -603,14 +608,15 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
         if (key == "PROFILE") {
             const auto parts = split(value, '|');
 
-            if (parts.size() < 2 || parts.size() > 5 || parts[0].empty() || parts[1].empty()) {
+            if (parts.size() < 2 || parts.size() > 6 || parts[0].empty() || parts[1].empty()) {
                 return std::unexpected{std::format("Invalid PROFILE line: {}", rawLine)};
             }
 
             suite.profiles.push_back({parts[0], parts[1],
                                       parts.size() >= 3 && !parts[2].empty() ? std::optional{parts[2]} : std::nullopt,
                                       parts.size() >= 4 && !parts[3].empty() ? std::optional{parts[3]} : std::nullopt,
-                                      parts.size() >= 5 && !parts[4].empty() ? std::optional{parts[4]} : std::nullopt});
+                                      parts.size() >= 5 && !parts[4].empty() ? std::optional{parts[4]} : std::nullopt,
+                                      parts.size() >= 6 && !parts[5].empty() ? std::optional{parts[5]} : std::nullopt});
         } else {
             settings[key] = value;
         }
@@ -758,6 +764,11 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
             return std::unexpected{
                 std::format("Invalid client role for profile {}: {}", profile.name, *profile.clientRole)};
         }
+
+        if (profile.clientImplementation && !validClientImplementation(*profile.clientImplementation)) {
+            return std::unexpected{std::format("Invalid client implementation for profile {}: {}", profile.name,
+                                               *profile.clientImplementation)};
+        }
     }
 
     return suite;
@@ -787,7 +798,8 @@ std::vector<BenchmarkRun> buildBenchmarkPlan(const BenchmarkSuite &suite, const 
             result.push_back({profile.name, repetition, std::format("{}-r{:02}", profile.name, repetition),
                               profile.task, profile.clientRole.value_or(defaultRole), listenerDelay,
                               profile.eventsBatchLimit.value_or(defaultBatchLimit),
-                              profile.aggregationPeriod.value_or(defaultAggregationPeriod)});
+                              profile.aggregationPeriod.value_or(defaultAggregationPeriod),
+                              profile.clientImplementation.value_or("graal")});
         }
     }
 
@@ -815,9 +827,10 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
     const auto plan = buildBenchmarkPlan(suite, overrides);
     const auto server = binaryDirectory / executableName("latency_server");
     const auto client = binaryDirectory / executableName("latency_client");
+    const auto legacyClient = binaryDirectory / executableName("latency_legacy_client");
     const auto analyzer = binaryDirectory / executableName("latency_analyzer");
 
-    for (const auto &binary : {server, client, analyzer}) {
+    for (const auto &binary : {server, analyzer}) {
         if (!std::filesystem::exists(binary)) {
             std::cerr << "Missing benchmark binary: " << binary << '\n';
 
@@ -825,12 +838,34 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
         }
     }
 
+    const auto needsGraalClient = std::ranges::any_of(plan, [](const BenchmarkRun &run) {
+        return run.clientImplementation == "graal";
+    });
+    const auto needsLegacyClient = std::ranges::any_of(plan, [](const BenchmarkRun &run) {
+        return run.clientImplementation == "legacy";
+    });
+
+    if (needsGraalClient && !std::filesystem::exists(client)) {
+        std::cerr << "Missing benchmark binary: " << client << '\n';
+
+        return 2;
+    }
+
+    if (needsLegacyClient && !std::filesystem::exists(legacyClient)) {
+        std::cerr << "Missing benchmark binary: " << legacyClient
+                  << " (configure with LATENCY_BUILD_LEGACY_CLIENT=ON)\n";
+
+        return 2;
+    }
+
     if (dryRun) {
         for (const auto &run : plan) {
-            std::cout << std::format("{} : {} ; role={} events-batch-limit={} aggregation-period={} listener-delay={} "
+            std::cout << std::format("{} : {} ; client={} role={} events-batch-limit={} aggregation-period={} "
+                                     "listener-delay={} "
                                      "startup-timeout={} warmup={} duration={}\n",
-                                     run.prefix, run.task, run.clientRole, run.eventsBatchLimit, run.aggregationPeriod,
-                                     run.listenerDelay, suite.startupTimeout, suite.warmup, suite.duration);
+                                     run.prefix, run.task, run.clientImplementation, run.clientRole,
+                                     run.eventsBatchLimit, run.aggregationPeriod, run.listenerDelay,
+                                     suite.startupTimeout, suite.warmup, suite.duration);
         }
 
         std::cout << std::format("Analyzer: {} --monitoring-period {}\n", analyzer.string(), suite.monitoringPeriod);
@@ -861,7 +896,8 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
     }
 
     std::ofstream manifest{runDirectory / "run-manifest.csv"};
-    manifest << "profile,repetition,task,client_role,events_batch_limit,aggregation_period,status,client_exit_code\n";
+    manifest << "profile,repetition,task,client_implementation,client_role,events_batch_limit,aggregation_period,"
+                "status,client_exit_code\n";
     std::ofstream environment{runDirectory / "environment.txt"};
     environment << "started_utc=" << timestamp(false) << '\n';
     environment << "git_commit=" << gitCommit() << '\n';
@@ -909,9 +945,16 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
         serverLog += "-server.log";
         auto clientLog = prefix;
         clientLog += "-client.log";
-        std::cout << std::format("Starting {} ({})\n", run.prefix, run.task) << std::flush;
-        auto serverProcess = ChildProcess::start(
-            server, {"--address", suite.listenAddress, "--monitoring-stat", suite.monitoringPeriod}, serverLog);
+        std::cout << std::format("Starting {} with {} client ({})\n", run.prefix, run.clientImplementation, run.task)
+                  << std::flush;
+        std::vector<std::string> serverArguments{"--address", suite.listenAddress, "--monitoring-stat",
+                                                 suite.monitoringPeriod};
+
+        if (run.clientImplementation == "legacy") {
+            serverArguments.insert(serverArguments.end(), {"--task", run.task});
+        }
+
+        auto serverProcess = ChildProcess::start(server, serverArguments, serverLog);
         int clientExit{-1};
         std::string status{"failed"};
 
@@ -920,43 +963,57 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
         } else if (!waitForText(*serverProcess, serverLog, "Latency server listening on", 30s)) {
             std::ofstream{clientLog} << "Runner error: latency server did not become ready\n";
         } else {
-            auto clientResult = runAndWait(client,
-                                           {"--address",
-                                            suite.address,
-                                            "--task",
-                                            run.task,
-                                            "--role",
-                                            run.clientRole,
-                                            "--listener-delay",
-                                            run.listenerDelay,
-                                            "--events-batch-limit",
-                                            run.eventsBatchLimit,
-                                            "--aggregation-period",
-                                            run.aggregationPeriod,
-                                            "--warmup",
-                                            suite.warmup,
-                                            "--duration",
-                                            suite.duration,
-                                            "--window",
-                                            suite.window,
-                                            "--batch-timeout",
-                                            suite.batchTimeout,
-                                            "--startup-timeout",
-                                            suite.startupTimeout,
-                                            "--monitoring-stat",
-                                            suite.monitoringPeriod,
-                                            "--output",
-                                            prefix.string()},
-                                           clientLog);
+            std::expected<int, std::string> clientResult;
+
+            if (run.clientImplementation == "legacy") {
+                clientResult = runAndWait(legacyClient,
+                                          {"--address", suite.address, "--task", run.task, "--warmup", suite.warmup,
+                                           "--duration", suite.duration, "--startup-timeout", suite.startupTimeout,
+                                           "--output", prefix.string(), "--contract", "default", "--require-events"},
+                                          clientLog);
+            } else {
+                clientResult = runAndWait(client,
+                                          {"--address",
+                                           suite.address,
+                                           "--task",
+                                           run.task,
+                                           "--role",
+                                           run.clientRole,
+                                           "--listener-delay",
+                                           run.listenerDelay,
+                                           "--events-batch-limit",
+                                           run.eventsBatchLimit,
+                                           "--aggregation-period",
+                                           run.aggregationPeriod,
+                                           "--warmup",
+                                           suite.warmup,
+                                           "--duration",
+                                           suite.duration,
+                                           "--window",
+                                           suite.window,
+                                           "--batch-timeout",
+                                           suite.batchTimeout,
+                                           "--startup-timeout",
+                                           suite.startupTimeout,
+                                           "--monitoring-stat",
+                                           suite.monitoringPeriod,
+                                           "--output",
+                                           prefix.string()},
+                                          clientLog);
+            }
+
             clientExit = clientResult.value_or(-1);
-            auto summary = prefix;
-            summary += "-summary.csv";
+            auto resultFile = prefix;
+            resultFile += run.clientImplementation == "legacy" ? "-delivery.csv" : "-summary.csv";
 
-            if (clientResult && clientExit == 0 && std::filesystem::exists(summary)) {
-                const auto deadline = std::chrono::steady_clock::now() + 5s;
+            if (clientResult && clientExit == 0 && std::filesystem::exists(resultFile)) {
+                if (run.clientImplementation == "graal") {
+                    const auto deadline = std::chrono::steady_clock::now() + 5s;
 
-                while (std::chrono::steady_clock::now() < deadline && !containsText(serverLog, "Generator summary")) {
-                    std::this_thread::sleep_for(100ms);
+                    while (std::chrono::steady_clock::now() < deadline &&
+                           !containsText(serverLog, "Generator summary")) {
+                        std::this_thread::sleep_for(100ms);
+                    }
                 }
 
                 status = "passed";
@@ -975,8 +1032,9 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
             makePartial(prefix);
         }
 
-        manifest << csv(run.profile) << ',' << run.repetition << ',' << csv(run.task) << ',' << run.clientRole << ','
-                 << run.eventsBatchLimit << ',' << run.aggregationPeriod << ',' << status << ',' << clientExit << '\n';
+        manifest << csv(run.profile) << ',' << run.repetition << ',' << csv(run.task) << ',' << run.clientImplementation
+                 << ',' << run.clientRole << ',' << run.eventsBatchLimit << ',' << run.aggregationPeriod << ','
+                 << status << ',' << clientExit << '\n';
         manifest.flush();
 
         if (index + 1 < plan.size()) {
@@ -990,14 +1048,16 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
         failed = true;
     }
 
-    const auto hasSummary =
+    const auto hasResult =
         std::ranges::any_of(std::filesystem::directory_iterator{runDirectory}, [](const auto &entry) {
-            return entry.path().filename().string().ends_with("-summary.csv");
+            const auto filename = entry.path().filename().string();
+
+            return filename.ends_with("-summary.csv") || filename.ends_with("-delivery.csv");
         });
 
     if (interrupted) {
         std::ofstream{runDirectory / "analyzer.log"} << "Benchmark interrupted before analysis\n";
-    } else if (hasSummary) {
+    } else if (hasResult) {
         const auto analyzerResult = runAndWait(
             analyzer, {"--run-directory", runDirectory.string(), "--monitoring-period", suite.monitoringPeriod},
             runDirectory / "analyzer.log");

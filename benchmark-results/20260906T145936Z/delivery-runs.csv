@@ -1,0 +1,4 @@
+"profile","scenario","repetition","nominal_events_per_second","callbacks","recurring_events","quote","trade","trade_eth","summary","profiles","maximum_data_count","actual_events_per_second","contract"
+"legacy-default-r01","legacy-default","1","150000","8943577","8943577","2235750","2235947","2236125","2235755","0","1","148911.85200000001","default"
+"legacy-default-r02","legacy-default","2","150000","8935291","8935291","2233875","2233666","2233875","2233875","0","1","148885.802","default"
+"legacy-default-r03","legacy-default","3","150000","8941597","8941597","2235375","2235375","2235375","2235472","0","1","148912.82199999999","default"

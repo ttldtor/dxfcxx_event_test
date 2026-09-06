@@ -20,7 +20,7 @@ On Linux or macOS, use a single-configuration build:
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DDXFCXX_BUILD_DOC=OFF -DDXFCXX_BUILD_SAMPLES=OFF -DDXFCXX_BUILD_TOOLS=OFF
-cmake --build build --parallel 4
+cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
@@ -35,7 +35,7 @@ On Windows, run the following from a Visual Studio developer shell:
 ```powershell
 cmake -S . -B build -A x64 `
   -DDXFCXX_BUILD_DOC=OFF -DDXFCXX_BUILD_SAMPLES=OFF -DDXFCXX_BUILD_TOOLS=OFF
-cmake --build build --config Release --parallel 4
+cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
@@ -128,7 +128,7 @@ latency summaries and captured QD logs, then writes `monitoring.csv` and `monito
 `--run-directory` and the same `--monitoring-period` that was used by server and client. Durations accepted by all
 tools use `ms`, `s`, `m`, or `h` suffixes.
 
-### Legacy C API smoke client
+### Legacy C API delivery client
 
 Set `LATENCY_BUILD_LEGACY_CLIENT=ON` to build the separate `latency_legacy_client` executable. CMake downloads the
 official pinned dxFeed C API 5.11.0 no-TLS binary SDK and exposes it through an imported target; it does not embed the
@@ -136,7 +136,7 @@ upstream source project or manually copy its source lists. This optional target 
 and Linux. It is kept in a separate process so the legacy native library and the Graal Native SDK are never loaded
 into the same address space.
 
-The first implementation is deliberately a connectivity and delivery-shape smoke test. It subscribes to the task's
+The legacy client deliberately measures connectivity and delivery shape. It subscribes to the task's
 `Quote`, `Trade`, `TradeETH`, and `Summary` types plus `Profile`, then reports callback count, recurring event count,
 initial Profile count, and the largest legacy `data_count`. It does not report E2E latency: `Trade` and `Quote` expose
 `time_nanos`, while `Summary` and `Profile` do not expose an equivalent event timestamp, and none of those fields is
@@ -146,7 +146,7 @@ Configure and build it on Windows with:
 
 ```powershell
 cmake -S . -B build-legacy -A x64 '-DLATENCY_BUILD_LEGACY_CLIENT=ON'
-cmake --build build-legacy --config Release --parallel 4
+cmake --build build-legacy --config Release --parallel
 ```
 
 Then run the server and client in separate terminals with the same task:
@@ -164,6 +164,36 @@ With the default C API contract, a smoke run using one base symbol produced 27 s
 recurring type: the composite symbol plus `&A` through `&Z`. `Profile` produced only the composite subscription.
 Consequently, `SUB:Q1;T1;E1;S1` represents 109 observed server-side keys even though it publishes four recurring
 composite events per period.
+
+The two client paths remain isolated and intentionally measure different observables:
+
+```mermaid
+flowchart LR
+    S["Synthetic Graal CXX publisher<br/>composite Q/T/E/S + Profile"]
+    S --> QD["QD transport on loopback"]
+    QD --> G["Graal CXX client<br/>STREAM_FEED or FEED"]
+    QD --> L["Legacy C API client<br/>default/ticker/stream contract"]
+    G --> GL["Marker-correlated E2E latency<br/>delivery and callback metrics"]
+    L --> LL["Delivery rate and callback shape<br/>no common publish-time marker"]
+```
+
+`latency_runner` can select the client per profile using the optional sixth field:
+`PROFILE=name|task|client-role|events-batch-limit|aggregation-period|client-implementation`. The implementation is
+`graal` by default, preserving existing suite files; use `legacy` only in builds configured with
+`LATENCY_BUILD_LEGACY_CLIENT=ON`. Legacy runs write `<prefix>-delivery.csv`, and the analyzer produces separate
+`delivery-runs.csv` and `delivery-comparison.csv` files instead of presenting delivery counters as latency.
+
+The ready-to-run `tools/legacy-api-comparison.conf` suite rotates three repetitions of the Graal CXX `STREAM_FEED`
+and default legacy C API clients at the same shuffled 150,000 composite events/s workload. It compares observable
+delivery and callback shape. It does not claim that a callback-rate difference proves a transport regression or
+that the two APIs expose equivalent latency timestamps.
+
+Run it from the same legacy-enabled build with:
+
+```powershell
+.\build-legacy\Release\latency_runner.exe --binary-directory .\build-legacy\Release `
+    --config .\tools\legacy-api-comparison.conf
+```
 
 ## Running a benchmark
 
@@ -196,11 +226,11 @@ when the logs will be analyzed later:
 ./build/latency_analyzer --run-directory run --monitoring-period 10s
 ```
 
-PowerShell uses the same executable and options. `latency_analyzer` looks for matching `<profile>-summary.csv`,
-`<profile>-server.log`, and `<profile>-client.log` files. It writes every parsed interval to `monitoring.csv` and
-profile/process aggregates for intervals wholly inside the measurement phase to `monitoring-summary.csv`. QD log
-timestamps have no UTC offset and are interpreted in the analyzer process's local time zone; analyze moved logs with
-the same `TZ` setting as the machine that produced them.
+PowerShell uses the same executable and options. `latency_analyzer` looks for matching `<profile>-summary.csv` or
+`<profile>-delivery.csv`, `<profile>-server.log`, and `<profile>-client.log` files. It writes every parsed interval to
+`monitoring.csv` and profile/process aggregates for intervals wholly inside the measurement phase to
+`monitoring-summary.csv`. QD log timestamps have no UTC offset and are interpreted in the analyzer process's local
+time zone; analyze moved logs with the same `TZ` setting as the machine that produced them.
 
 ## Repeated local benchmark suite
 
@@ -230,11 +260,12 @@ Use `--dry-run` to validate the suite and display all planned commands without s
 written below `benchmark-results/<UTC timestamp>/`. A full default run takes approximately two hours and twenty
 minutes plus any machine-dependent startup overhead.
 
-A `PROFILE` line may override the endpoint role, events batch limit, and aggregation period for that profile using
-`PROFILE=name|task|client-role|events-batch-limit|aggregation-period`. Omitted fields inherit `CLIENT_ROLE`,
-`EVENTS_BATCH_LIMIT`, and `AGGREGATION_PERIOD` from the suite; the last two default to `optimal` and `0`.
-Command-line `--events-batch-limit` and `--aggregation-period` provide suite-wide overrides for profiles that do not
-specify them.
+A `PROFILE` line may override the endpoint role, events batch limit, aggregation period, and client implementation
+for that profile using
+`PROFILE=name|task|client-role|events-batch-limit|aggregation-period|client-implementation`. Omitted fields inherit
+`CLIENT_ROLE`, `EVENTS_BATCH_LIMIT`, and `AGGREGATION_PERIOD` from the suite; the last two default to `optimal` and
+`0`, while the client implementation defaults to `graal`. Command-line `--events-batch-limit` and
+`--aggregation-period` provide suite-wide overrides for profiles that do not specify them.
 
 A suite may describe its experiment with `EXPERIMENT_TITLE`, `EXPERIMENT_OBJECTIVE`, `EXPERIMENT_VARIABLE`,
 `EXPERIMENT_CONTROLS`, `EXPERIMENT_SUCCESS_CRITERIA`, and `EXPERIMENT_LIMITATIONS`. These settings are optional for
@@ -513,14 +544,16 @@ type-specific sample kind in the outliers file.
 The source-level distinction between normal `FEED` supersession and `STREAM_FEED` buffering is documented in
 [`benchmark-results/QD-FEED-DELIVERY-PATH.md`](benchmark-results/QD-FEED-DELIVERY-PATH.md). A controlled comparison
 of two CXX API, Native SDK, and QD release stacks is in
-[`benchmark-results/SDK-VERSION-COMPARISON.md`](benchmark-results/SDK-VERSION-COMPARISON.md).
+[`benchmark-results/SDK-VERSION-COMPARISON.md`](benchmark-results/SDK-VERSION-COMPARISON.md). The repeated delivery
+comparison between the Graal CXX `STREAM_FEED` client and legacy C API default client is in
+[`benchmark-results/20260906T145936Z/REPORT.md`](benchmark-results/20260906T145936Z/REPORT.md).
 
 The legacy C API does not implement the newer client-side FEED conflation mechanism, delivers events to its callback
-one at a time, and does not support `TextMessage`, which this benchmark uses as the exact per-publication timestamp
-marker. A legacy-client comparison would therefore require a different marker carried by an event supported by
-both APIs, plus current-API `FEED` and `STREAM_FEED` controls that make the delivery-semantics difference explicit.
-The replacement marker must be validated for identical serialization and decoding before its latency results can
-be compared with the current reports.
+one at a time, and does not support `TextMessage`, which the Graal benchmark uses as the exact per-publication
+timestamp marker. The implemented legacy comparison therefore reports delivery rate and callback shape, not E2E
+latency. A direct latency comparison still requires a different marker carried by an event supported by both APIs;
+that marker must be validated for identical serialization and decoding before comparing its results with the Graal
+reports.
 
 ## QD monitoring statistics
 

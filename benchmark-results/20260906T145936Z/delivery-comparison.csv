@@ -1,0 +1,4 @@
+"scenario","category","metric","runs","minimum","median","maximum"
+"legacy-default","legacy-delivery","actual_events_per_second","3","148885.802","148911.85200000001","148912.82199999999"
+"legacy-default","legacy-delivery","callbacks","3","8935291","8941597","8943577"
+"legacy-default","legacy-delivery","maximum_data_count","3","1","1","1"

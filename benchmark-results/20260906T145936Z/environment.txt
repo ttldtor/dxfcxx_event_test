@@ -1,0 +1,15 @@
+started_utc=2026-09-06T14:59:36Z
+git_commit=78cf9d421f51ce5b94e4c259ebe94639b1cbd151
+cxx_compiler=MSVC 19.51.36256.0
+dxfeed_graal_cxx_api_version=v7.0.0
+dxfeed_graal_native_sdk_version=3.2.0
+qd_version=3.347
+os=Windows
+architecture=x86_64
+processor_count=32
+binary_directory=C:\w\!active\dxfcxx_event_test\cmake-build-v7\Release
+suite_config=C:\w\!active\dxfcxx_event_test\tools\legacy-api-comparison.conf
+client_role=stream-feed
+listener_delay=0
+events_batch_limit=optimal
+aggregation_period=0

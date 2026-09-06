@@ -10,9 +10,13 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <filesystem>
 #include <format>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -38,7 +42,7 @@ enum class Contract {
     STREAM
 };
 
-/** Command-line settings for the legacy C API smoke client. */
+/** Command-line settings for the legacy C API delivery client. */
 struct Config {
     /** Address of the synthetic publisher endpoint. */
     std::string address{"127.0.0.1:7400"};
@@ -46,8 +50,17 @@ struct Config {
     /** Task whose event mask and symbol universe are subscribed. */
     std::string task{"SUB:T1@100ms"};
 
-    /** Time for which callbacks are observed after the subscription is installed. */
+    /** Warm-up period excluded from reported delivery counters. */
+    std::chrono::milliseconds warmup{2s};
+
+    /** Measurement period included in the delivery report. */
     std::chrono::milliseconds duration{5s};
+
+    /** Maximum wait for initial Profiles and the first recurring event. */
+    std::chrono::milliseconds startupTimeout{30s};
+
+    /** Path and filename prefix for the delivery CSV. */
+    std::filesystem::path output{"legacy"};
 
     /** C API subscription contract. */
     Contract contract{Contract::DEFAULT};
@@ -64,6 +77,18 @@ struct CallbackState {
     /** Total recurring Quote, Trade, TradeETH, and Summary events. */
     std::atomic<std::size_t> recurringEvents{};
 
+    /** Recurring Quote events. */
+    std::atomic<std::size_t> quotes{};
+
+    /** Recurring Trade events. */
+    std::atomic<std::size_t> trades{};
+
+    /** Recurring TradeETH events. */
+    std::atomic<std::size_t> tradeEths{};
+
+    /** Recurring Summary events. */
+    std::atomic<std::size_t> summaries{};
+
     /** Initial or updated Profile events. */
     std::atomic<std::size_t> profiles{};
 
@@ -72,6 +97,17 @@ struct CallbackState {
 
     /** Whether the connection termination callback was invoked. */
     std::atomic<bool> terminated{};
+};
+
+/** Immutable callback-counter snapshot used to isolate the measurement interval. */
+struct CallbackSnapshot {
+    std::size_t callbacks{};
+    std::size_t recurringEvents{};
+    std::size_t quotes{};
+    std::size_t trades{};
+    std::size_t tradeEths{};
+    std::size_t summaries{};
+    std::size_t profiles{};
 };
 
 /** Records an operating-system termination request. */
@@ -163,15 +199,26 @@ void onEvents(int eventType, dxf_const_string_t, const dxf_event_data_t *, int d
     state.callbacks.fetch_add(1, std::memory_order_relaxed);
     updateMaximum(state.maximumBatch, dataCount);
 
+    const auto count = static_cast<std::size_t>(std::max(0, dataCount));
+
     if (eventType == DXF_ET_PROFILE) {
-        state.profiles.fetch_add(static_cast<std::size_t>(std::max(0, dataCount)), std::memory_order_relaxed);
-    } else if (eventType == DXF_ET_QUOTE || eventType == DXF_ET_TRADE || eventType == DXF_ET_TRADE_ETH ||
-               eventType == DXF_ET_SUMMARY) {
-        state.recurringEvents.fetch_add(static_cast<std::size_t>(std::max(0, dataCount)), std::memory_order_relaxed);
+        state.profiles.fetch_add(count, std::memory_order_relaxed);
+    } else {
+        state.recurringEvents.fetch_add(count, std::memory_order_relaxed);
+
+        if (eventType == DXF_ET_QUOTE) {
+            state.quotes.fetch_add(count, std::memory_order_relaxed);
+        } else if (eventType == DXF_ET_TRADE) {
+            state.trades.fetch_add(count, std::memory_order_relaxed);
+        } else if (eventType == DXF_ET_TRADE_ETH) {
+            state.tradeEths.fetch_add(count, std::memory_order_relaxed);
+        } else if (eventType == DXF_ET_SUMMARY) {
+            state.summaries.fetch_add(count, std::memory_order_relaxed);
+        }
     }
 }
 
-/** Parses and validates legacy smoke-client command-line arguments. */
+/** Parses and validates legacy delivery-client command-line arguments. */
 Config parseArgs(int argc, char **argv) {
     Config config;
 
@@ -182,7 +229,10 @@ Config parseArgs(int argc, char **argv) {
             std::cout << R"(Usage: latency_legacy_client [options]
   --address 127.0.0.1:7400   synthetic publisher address
   --task SUB:T1@100ms        subscribed types and common symbol universe
-  --duration 5s              callback observation period
+  --warmup 2s                callback warm-up excluded from the report
+  --duration 5s              measured callback observation period
+  --startup-timeout 30s      wait for initial Profiles and recurring data
+  --output legacy            delivery CSV path and filename prefix
   --contract default         default, ticker, or stream
   --require-events           fail if no recurring event reaches the listener
 )";
@@ -205,14 +255,22 @@ Config parseArgs(int argc, char **argv) {
             config.address = value;
         } else if (arg == "--task") {
             config.task = value;
-        } else if (arg == "--duration") {
+        } else if (arg == "--warmup" || arg == "--duration" || arg == "--startup-timeout") {
             const auto duration = latency::parseDuration(value);
 
             if (!duration) {
                 throw std::invalid_argument(duration.error());
             }
 
-            config.duration = *duration;
+            if (arg == "--warmup") {
+                config.warmup = *duration;
+            } else if (arg == "--duration") {
+                config.duration = *duration;
+            } else {
+                config.startupTimeout = *duration;
+            }
+        } else if (arg == "--output") {
+            config.output = value;
         } else if (arg == "--contract") {
             if (value == "default") {
                 config.contract = Contract::DEFAULT;
@@ -339,18 +397,103 @@ class Session final {
     }
 };
 
-/** Waits for the requested observation period or an asynchronous stop condition. */
-void observe(const Config &config, const CallbackState &state) {
-    const auto deadline = std::chrono::steady_clock::now() + config.duration;
+/** Returns a consistent-enough atomic snapshot for interval counter subtraction. */
+CallbackSnapshot snapshot(const CallbackState &state) {
+    return {state.callbacks.load(), state.recurringEvents.load(), state.quotes.load(),  state.trades.load(),
+            state.tradeEths.load(), state.summaries.load(),       state.profiles.load()};
+}
+
+/** Subtracts callback counters captured at two measurement boundaries. */
+CallbackSnapshot operator-(const CallbackSnapshot &end, const CallbackSnapshot &start) {
+    return {end.callbacks - start.callbacks, end.recurringEvents - start.recurringEvents,
+            end.quotes - start.quotes,       end.trades - start.trades,
+            end.tradeEths - start.tradeEths, end.summaries - start.summaries,
+            end.profiles - start.profiles};
+}
+
+/** Waits for a duration or an asynchronous stop condition. */
+void observe(std::chrono::milliseconds duration, const CallbackState &state) {
+    const auto deadline = std::chrono::steady_clock::now() + duration;
 
     while (!interrupted.load() && !state.terminated.load() && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(50ms);
     }
 }
 
+/** Waits until subscription propagation produces all initial Profiles and recurring data. */
+bool waitForStartup(const Config &config, const latency::TaskPattern &pattern, const CallbackState &state) {
+    const auto deadline = std::chrono::steady_clock::now() + config.startupTimeout;
+
+    while (!interrupted.load() && !state.terminated.load() && std::chrono::steady_clock::now() < deadline) {
+        if (state.profiles.load() >= pattern.symbolCount() && state.recurringEvents.load() > 0) {
+            return true;
+        }
+
+        std::this_thread::sleep_for(50ms);
+    }
+
+    return false;
+}
+
+/** Formats a system-clock time point as an ISO-8601 UTC timestamp with millisecond precision. */
+std::string formatUtc(std::chrono::system_clock::time_point value) {
+    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(value.time_since_epoch());
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(milliseconds);
+    const auto fraction = milliseconds - seconds;
+    const auto time = std::chrono::system_clock::to_time_t(std::chrono::system_clock::time_point{seconds});
+    std::tm utc{};
+#ifdef _WIN32
+    gmtime_s(&utc, &time);
+#else
+    gmtime_r(&time, &utc);
+#endif
+    std::ostringstream output;
+    output << std::put_time(&utc, "%Y-%m-%dT%H:%M:%S") << '.' << std::setw(3) << std::setfill('0') << fraction.count()
+           << 'Z';
+
+    return output.str();
+}
+
+/** Returns the stable command-line name of a legacy subscription contract. */
+std::string_view contractName(Contract contract) {
+    switch (contract) {
+    case Contract::DEFAULT:
+        return "default";
+    case Contract::TICKER:
+        return "ticker";
+    case Contract::STREAM:
+        return "stream";
+    }
+
+    return "unknown";
+}
+
+/** Writes one whole-run delivery row without claiming timestamp-based E2E latency. */
+void writeDelivery(const Config &config, const latency::TaskPattern &pattern, const CallbackSnapshot &measured,
+                   int maximumBatch, std::chrono::system_clock::time_point start,
+                   std::chrono::system_clock::time_point end, double elapsed) {
+    auto path = config.output;
+    path += "-delivery.csv";
+    std::ofstream output{path};
+
+    if (!output) {
+        throw std::runtime_error(std::format("unable to write {}", path.string()));
+    }
+
+    output << "\"window_start_utc\",\"window_end_utc\",\"sample_kind\",\"expected_per_batch\","
+              "\"nominal_events_per_second\",\"callbacks\",\"recurring_events\",\"quote\",\"trade\","
+              "\"trade_eth\",\"summary\",\"profiles\",\"maximum_data_count\","
+              "\"actual_events_per_second\",\"contract\"\n";
+    output << std::format("\"{}\",\"{}\",\"event\",{},{:.3f},{},{},{},{},{},{},{},{},{:.3f},\"{}\"\n", formatUtc(start),
+                          formatUtc(end), pattern.eventCount(), pattern.nominalEventsPerSecond(), measured.callbacks,
+                          measured.recurringEvents, measured.quotes, measured.trades, measured.tradeEths,
+                          measured.summaries, measured.profiles, maximumBatch,
+                          elapsed > 0 ? measured.recurringEvents / elapsed : 0.0, contractName(config.contract));
+}
+
 } // namespace
 
-/** Runs the legacy dxFeed C API comparison smoke client. */
+/** Runs the legacy dxFeed C API comparison delivery client. */
 int main(int argc, char **argv) {
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
@@ -368,23 +511,39 @@ int main(int argc, char **argv) {
         Session session{state};
 
         std::cout << std::format(
-                         "Starting dxFeed C API {} smoke client: task={}, symbols={}, nominal={:.3f} events/s\n",
+                         "Starting dxFeed C API {} delivery client: task={}, symbols={}, nominal={:.3f} events/s\n",
                          LATENCY_DXFEED_C_API_VERSION, config.task, pattern->symbolCount(),
                          pattern->nominalEventsPerSecond())
                   << std::flush;
         session.start(config, *pattern);
 
-        const auto started = std::chrono::steady_clock::now();
+        if (!waitForStartup(config, *pattern, state)) {
+            throw std::runtime_error(std::format("startup timed out: profiles={}/{} recurring-events={}",
+                                                 state.profiles.load(), pattern->symbolCount(),
+                                                 state.recurringEvents.load()));
+        }
 
-        observe(config, state);
+        std::cout << std::format("Initial Profile setup complete: {}/{}. Warm-up {} ms.\n", state.profiles.load(),
+                                 pattern->symbolCount(), config.warmup.count())
+                  << std::flush;
+        observe(config.warmup, state);
 
-        const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-        const auto recurringEvents = state.recurringEvents.load();
+        const auto before = snapshot(state);
+        const auto startedSteady = std::chrono::steady_clock::now();
+        const auto startedWall = std::chrono::system_clock::now();
+
+        observe(config.duration, state);
+
+        const auto endedWall = std::chrono::system_clock::now();
+        const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startedSteady).count();
+        const auto measured = snapshot(state) - before;
+
+        writeDelivery(config, *pattern, measured, state.maximumBatch.load(), startedWall, endedWall, elapsed);
 
         std::cout << std::format("Legacy summary: elapsed={:.3f}s callbacks={} recurring-events={} profiles={} "
                                  "maximum-data-count={} actual-events/s={:.3f}\n",
-                                 elapsed, state.callbacks.load(), recurringEvents, state.profiles.load(),
-                                 state.maximumBatch.load(), elapsed > 0 ? recurringEvents / elapsed : 0.0);
+                                 elapsed, measured.callbacks, measured.recurringEvents, measured.profiles,
+                                 state.maximumBatch.load(), elapsed > 0 ? measured.recurringEvents / elapsed : 0.0);
 
         if (interrupted.load()) {
             return 130;
@@ -394,7 +553,7 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        if (config.requireEvents && recurringEvents == 0) {
+        if (config.requireEvents && measured.recurringEvents == 0) {
             std::cerr << "Legacy client did not receive any recurring events\n";
 
             return 1;

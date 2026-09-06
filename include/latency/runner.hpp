@@ -49,6 +49,9 @@ struct BenchmarkSuiteProfile {
 
     /// Optional market-event notification aggregation-period override.
     std::optional<std::string> aggregationPeriod;
+
+    /// Optional client implementation: `graal` or `legacy`.
+    std::optional<std::string> clientImplementation;
 };
 
 /// Contains global settings and workload profiles parsed from a suite configuration.
@@ -142,6 +145,9 @@ struct BenchmarkRun {
 
     /// Effective market-event notification aggregation period.
     std::string aggregationPeriod;
+
+    /// Client executable family selected for this run: `graal` or `legacy`.
+    std::string clientImplementation;
 };
 
 /// Parses and validates a benchmark suite configuration.
