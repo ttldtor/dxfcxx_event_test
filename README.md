@@ -292,9 +292,10 @@ takes approximately 15 minutes:
     --config .\tools\aggregation-stream-control.conf
 ```
 
-With the current Graal Native SDK build, a `STREAM_FEED` endpoint does not emit the periodic client-side lines that
-the monitoring parser recognizes. Its client monitoring cells are therefore reported as `n/a`, not as zero. Exact
-listener coverage, latency, callback, and server-side monitoring measurements remain available.
+The benchmark passes `monitoring.stat` directly to `DXEndpoint::Builder`. This is required for `STREAM_FEED`, whose
+endpoint configuration does not import Java system properties. Both client and server monitoring should therefore
+be present in the generated report; an `n/a` value still means that no parseable sample was emitted and must not be
+interpreted as zero.
 
 ```sh
 ./build/latency_runner --binary-directory ./build \

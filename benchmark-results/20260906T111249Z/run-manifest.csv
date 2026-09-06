@@ -1,0 +1,10 @@
+profile,repetition,task,client_role,events_batch_limit,aggregation_period,status,client_exit_code
+"aggregation-stream-0",1,"SUB:Q375;T375;E375;S375@10ms#375~22805",stream-feed,optimal,0,passed,0
+"aggregation-stream-1ms",1,"SUB:Q375;T375;E375;S375@10ms#375~22805",stream-feed,optimal,1ms,passed,0
+"aggregation-stream-10ms",1,"SUB:Q375;T375;E375;S375@10ms#375~22805",stream-feed,optimal,10ms,passed,0
+"aggregation-stream-1ms",2,"SUB:Q375;T375;E375;S375@10ms#375~22805",stream-feed,optimal,1ms,passed,0
+"aggregation-stream-10ms",2,"SUB:Q375;T375;E375;S375@10ms#375~22805",stream-feed,optimal,10ms,passed,0
+"aggregation-stream-0",2,"SUB:Q375;T375;E375;S375@10ms#375~22805",stream-feed,optimal,0,passed,0
+"aggregation-stream-10ms",3,"SUB:Q375;T375;E375;S375@10ms#375~22805",stream-feed,optimal,10ms,passed,0
+"aggregation-stream-0",3,"SUB:Q375;T375;E375;S375@10ms#375~22805",stream-feed,optimal,0,passed,0
+"aggregation-stream-1ms",3,"SUB:Q375;T375;E375;S375@10ms#375~22805",stream-feed,optimal,1ms,passed,0

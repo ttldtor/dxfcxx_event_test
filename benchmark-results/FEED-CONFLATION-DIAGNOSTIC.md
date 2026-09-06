@@ -43,8 +43,11 @@ that queues updates instead of retaining only the latest ticker state.
 - The experiment proves that client-side `FEED` processing can produce the observed kind of listener deficit. It
   does not prove that every missing observation in the undelayed baseline is client-side; publisher-side
   conflation would require finer instrumentation to exclude completely.
-- The client monitoring lines are not emitted for the current `STREAM_FEED` endpoint, so its client monitoring
-  values are reported as `n/a`, not zero. Exact listener accounting still shows zero deficit in all three runs.
+- The historical `STREAM_FEED` run reports client monitoring as `n/a` because the benchmark originally set
+  `monitoring.stat` as a Java system property. That role does not import system properties into its endpoint
+  configuration. The benchmark now passes the property directly to `DXEndpoint::Builder`; the corrected control in
+  [`20260906T111249Z`](20260906T111249Z/AGGREGATION-STREAM-CONTROL.md) contains client and server monitoring samples.
+  Exact listener accounting in the historical run still shows zero deficit in all three repetitions.
 - Historical `CHECK` results near measurement boundaries can include correlation artifacts because timestamp
   markers and market events use separate subscriptions. The client now excludes complete sequences observed during
   warm-up and retains a separate marker symbol through shutdown. Existing result CSV files are intentionally not

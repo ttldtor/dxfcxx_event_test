@@ -225,13 +225,16 @@ Config parseArgs(int argc, char **argv) {
     return config;
 }
 
-/** Applies the selected QD monitoring period before endpoint initialization. */
-void configureMonitoring(const std::optional<std::chrono::milliseconds> &period) {
+/** Applies the selected QD monitoring period directly to an endpoint builder. */
+void configureMonitoring(const std::shared_ptr<DXEndpoint::Builder> &builder,
+                         const std::optional<std::chrono::milliseconds> &period) {
     const auto value = latency::monitoringPeriodPropertyValue(period);
 
-    if (!System::setProperty(MONITORING_STAT_PROPERTY, value)) {
-        throw std::runtime_error(std::format("cannot set {}={}", MONITORING_STAT_PROPERTY, value));
+    if (!builder->supportsProperty(MONITORING_STAT_PROPERTY)) {
+        throw std::runtime_error(std::format("endpoint builder does not support {}", MONITORING_STAT_PROPERTY));
     }
+
+    builder->withProperty(MONITORING_STAT_PROPERTY, value);
 }
 
 /** An event retained until its batch marker supplies the authoritative publication timestamp. */
@@ -1090,10 +1093,13 @@ int main(int argc, char **argv) {
         Collector collector{*pattern, config.batchTimeout, expected * windowBatches, runBatches,
                             config.role == ClientRole::FEED};
 
-        configureMonitoring(config.monitoringStat);
         const auto endpointRole =
             config.role == ClientRole::FEED ? DXEndpoint::Role::FEED : DXEndpoint::Role::STREAM_FEED;
-        const auto endpoint = DXEndpoint::newBuilder()->withRole(endpointRole)->withName("latency-client")->build();
+        const auto endpointBuilder = DXEndpoint::newBuilder()->withRole(endpointRole)->withName("latency-client");
+
+        configureMonitoring(endpointBuilder, config.monitoringStat);
+
+        const auto endpoint = endpointBuilder->build();
         const auto feed = endpoint->getFeed();
         std::vector<EventTypeEnum> eventTypes;
         const auto addType = [&](const EventTypeEnum &type, latency::EventKind kind) {

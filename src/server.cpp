@@ -601,13 +601,16 @@ Config parseArgs(int argc, char **argv) {
     return config;
 }
 
-/** Applies the selected QD monitoring period before endpoint initialization. */
-void configureMonitoring(const std::optional<std::chrono::milliseconds> &period) {
+/** Applies the selected QD monitoring period directly to an endpoint builder. */
+void configureMonitoring(const std::shared_ptr<DXEndpoint::Builder> &builder,
+                         const std::optional<std::chrono::milliseconds> &period) {
     const auto value = latency::monitoringPeriodPropertyValue(period);
 
-    if (!System::setProperty(MONITORING_STAT_PROPERTY, value)) {
-        throw std::runtime_error(std::format("cannot set {}={}", MONITORING_STAT_PROPERTY, value));
+    if (!builder->supportsProperty(MONITORING_STAT_PROPERTY)) {
+        throw std::runtime_error(std::format("endpoint builder does not support {}", MONITORING_STAT_PROPERTY));
     }
+
+    builder->withProperty(MONITORING_STAT_PROPERTY, value);
 }
 } // namespace
 
@@ -619,9 +622,12 @@ int main(int argc, char **argv) {
     try {
         const auto config = parseArgs(argc, argv);
 
-        configureMonitoring(config.monitoringStat);
-        const auto endpoint =
-            DXEndpoint::newBuilder()->withRole(DXEndpoint::Role::PUBLISHER)->withName("latency-server")->build();
+        const auto endpointBuilder =
+            DXEndpoint::newBuilder()->withRole(DXEndpoint::Role::PUBLISHER)->withName("latency-server");
+
+        configureMonitoring(endpointBuilder, config.monitoringStat);
+
+        const auto endpoint = endpointBuilder->build();
         const auto publisher = endpoint->getPublisher();
         Generator generator{publisher};
 

@@ -1,0 +1,11 @@
+started_utc=2026-09-06T11:12:49Z
+git_commit=93a7a516b8ecd87fa6c34f0c3c837e0149afc076
+os=Windows
+architecture=x86_64
+processor_count=32
+binary_directory=C:\w\!active\dxfcxx_event_test\cmake-build-agent\Release
+suite_config=C:\w\!active\dxfcxx_event_test\tools\aggregation-stream-control.conf
+client_role=stream-feed
+listener_delay=0
+events_batch_limit=optimal
+aggregation_period=0
