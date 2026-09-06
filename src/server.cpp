@@ -87,6 +87,24 @@ constexpr std::size_t subscriptionKindIndex(SubscriptionKind kind) {
     return static_cast<std::size_t>(kind);
 }
 
+/** Returns the display name assigned to an observable publisher subscription. */
+std::string_view subscriptionKindName(SubscriptionKind kind) {
+    switch (kind) {
+    case SubscriptionKind::QUOTE:
+        return "Quote";
+    case SubscriptionKind::TRADE:
+        return "Trade";
+    case SubscriptionKind::TRADE_ETH:
+        return "TradeETH";
+    case SubscriptionKind::SUMMARY:
+        return "Summary";
+    case SubscriptionKind::PROFILE:
+        return "Profile";
+    }
+
+    return "Unknown";
+}
+
 /** Maps a generated market event kind to its publisher subscription kind. */
 SubscriptionKind subscriptionKind(latency::EventKind kind) {
     switch (kind) {
@@ -110,6 +128,7 @@ class Generator {
     std::condition_variable cv_;
     std::deque<Command> commands_;
     std::array<std::unordered_set<std::string>, 5> subscribedSymbols_;
+    bool traceSubscriptions_{};
     bool stopping_{};
     std::thread thread_;
 
@@ -464,6 +483,19 @@ class Generator {
                     } else if (command.type == CommandType::SUBSCRIPTION_CLOSED) {
                         subscribed.clear();
                     }
+
+                    if (traceSubscriptions_) {
+                        const auto regional =
+                            static_cast<std::size_t>(std::ranges::count_if(subscribed, [](const auto &symbol) {
+                                return symbol.find('&') != std::string::npos;
+                            }));
+
+                        std::cout << std::format(
+                                         "Observed {} subscription: update={} total={} composite={} regional={}\n",
+                                         subscriptionKindName(command.subscription), command.symbols.size(),
+                                         subscribed.size(), subscribed.size() - regional, regional)
+                                  << std::flush;
+                    }
                 }
 
                 startWhenReady();
@@ -490,9 +522,9 @@ class Generator {
     }
 
     public:
-    /** Starts the generator worker for a publisher. */
-    explicit Generator(std::shared_ptr<DXPublisher> publisher)
-        : publisher_(std::move(publisher)), thread_([this] {
+    /** Starts the generator worker for a publisher and optionally logs observed symbol cardinality. */
+    explicit Generator(std::shared_ptr<DXPublisher> publisher, bool traceSubscriptions = false)
+        : publisher_(std::move(publisher)), traceSubscriptions_(traceSubscriptions), thread_([this] {
               run();
           }) {
     }
@@ -556,10 +588,19 @@ class Generator {
     }
 };
 
-/** Command-line settings for the publisher endpoint and QD monitoring. */
+/** Command-line settings for the publisher endpoint, optional automatic task, and QD monitoring. */
 struct Config {
+    /** Address on which the publisher endpoint listens. */
     std::string address{":7400"};
+
+    /** Task queued without relying on a TextMessage control subscription. */
+    std::optional<std::string> task;
+
+    /** QD monitoring output period, or empty when monitoring is disabled. */
     std::optional<std::chrono::milliseconds> monitoringStat{10s};
+
+    /** Whether publisher-observable subscription cardinalities are logged. */
+    bool traceSubscriptions{};
 };
 
 /** Parses and validates benchmark-server command-line arguments. */
@@ -572,9 +613,17 @@ Config parseArgs(int argc, char **argv) {
         if (arg == "--help") {
             std::cout << R"(Usage: latency_server [options]
   --address :7400          default :7400
+  --task SUB:T1@100ms      queue a task without the TextMessage control channel
   --monitoring-stat 10s    0 disables QD statistics
+  --trace-subscriptions    log observed composite and regional symbol counts
 )";
             std::exit(0);
+        }
+
+        if (arg == "--trace-subscriptions") {
+            config.traceSubscriptions = true;
+
+            continue;
         }
 
         if (i + 1 >= argc) {
@@ -585,6 +634,15 @@ Config parseArgs(int argc, char **argv) {
 
         if (arg == "--address") {
             config.address = value;
+        } else if (arg == "--task") {
+            const auto pattern = latency::parseTask(value);
+
+            if (!pattern) {
+                throw std::invalid_argument(
+                    std::format("task parse error at {}: {}", pattern.error().position, pattern.error().message));
+            }
+
+            config.task = value;
         } else if (arg == "--monitoring-stat") {
             auto period = latency::parseMonitoringPeriod(value);
 
@@ -629,7 +687,7 @@ int main(int argc, char **argv) {
 
         const auto endpoint = endpointBuilder->build();
         const auto publisher = endpoint->getPublisher();
-        Generator generator{publisher};
+        Generator generator{publisher, config.traceSubscriptions};
 
         /** Owns an observable subscription and the identifier of its registered listener. */
         struct ObservedSubscription {
@@ -695,6 +753,11 @@ int main(int argc, char **argv) {
         endpoint->connect(config.address);
         std::cout << std::format("Latency server listening on {}. Press Ctrl+C to stop.\n", config.address)
                   << std::flush;
+
+        if (config.task) {
+            generator.enqueueControl(CommandType::START, *config.task);
+            std::cout << std::format("Queued automatic task {}\n", *config.task) << std::flush;
+        }
 
         while (!interrupted.load()) {
             std::this_thread::sleep_for(200ms);

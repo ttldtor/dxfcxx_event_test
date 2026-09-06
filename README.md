@@ -81,7 +81,9 @@ cadence until the subscription is removed. The marker timestamp is captured imme
 server logs separately report preparation time,
 publisher call time, achieved rate, and missed publication deadlines. `--monitoring-stat` controls the QD statistics
 period and accepts `0` to disable it. For portable sub-20-ms scheduling, the generator yields during the final 20 ms
-before a deadline; high-frequency profiles can therefore consume one CPU core on the publisher.
+before a deadline; high-frequency profiles can therefore consume one CPU core on the publisher. `--task` queues a
+task directly and is intended for clients, such as the legacy C API, that cannot use the `TextMessage` control
+channel. The queued task still waits for all required subscriptions before it starts.
 
 `latency_client` requests the task, discards the warm-up interval, and records latency during the measurement
 interval. Its main options are:
@@ -125,6 +127,43 @@ type by 375 symbols through this universe. This keeps throughput constant while 
 latency summaries and captured QD logs, then writes `monitoring.csv` and `monitoring-summary.csv`. Pass
 `--run-directory` and the same `--monitoring-period` that was used by server and client. Durations accepted by all
 tools use `ms`, `s`, `m`, or `h` suffixes.
+
+### Legacy C API smoke client
+
+Set `LATENCY_BUILD_LEGACY_CLIENT=ON` to build the separate `latency_legacy_client` executable. CMake downloads the
+official pinned dxFeed C API 5.11.0 no-TLS binary SDK and exposes it through an imported target; it does not embed the
+upstream source project or manually copy its source lists. This optional target is supported only on 64-bit Windows
+and Linux. It is kept in a separate process so the legacy native library and the Graal Native SDK are never loaded
+into the same address space.
+
+The first implementation is deliberately a connectivity and delivery-shape smoke test. It subscribes to the task's
+`Quote`, `Trade`, `TradeETH`, and `Summary` types plus `Profile`, then reports callback count, recurring event count,
+initial Profile count, and the largest legacy `data_count`. It does not report E2E latency: `Trade` and `Quote` expose
+`time_nanos`, while `Summary` and `Profile` do not expose an equivalent event timestamp, and none of those fields is
+the benchmark server's `publishEvents()` timestamp.
+
+Configure and build it on Windows with:
+
+```powershell
+cmake -S . -B build-legacy -A x64 '-DLATENCY_BUILD_LEGACY_CLIENT=ON'
+cmake --build build-legacy --config Release --parallel 4
+```
+
+Then run the server and client in separate terminals with the same task:
+
+```powershell
+.\build-legacy\Release\latency_server.exe --address :7400 --task "SUB:Q10;T10;E10;S10@100ms"
+.\build-legacy\Release\latency_legacy_client.exe --address 127.0.0.1:7400 `
+    --task "SUB:Q10;T10;E10;S10@100ms" --duration 10s --contract default --require-events
+```
+
+Use `--contract ticker` or `--contract stream` to force the corresponding legacy subscription flag. The default
+uses the C API's normal per-record contract selection, which is the relevant baseline for reproducing existing
+legacy-client behavior. Pass `--trace-subscriptions` to `latency_server` to log the symbol cardinality it observes.
+With the default C API contract, a smoke run using one base symbol produced 27 server-side subscriptions for each
+recurring type: the composite symbol plus `&A` through `&Z`. `Profile` produced only the composite subscription.
+Consequently, `SUB:Q1;T1;E1;S1` represents 109 observed server-side keys even though it publishes four recurring
+composite events per period.
 
 ## Running a benchmark
 

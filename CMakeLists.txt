@@ -22,6 +22,7 @@ include(FetchContent)
 
 set(LATENCY_DXFCXX_RELEASE "v7.0.0" CACHE STRING "dxFeed Graal CXX API release used by the benchmark")
 set_property(CACHE LATENCY_DXFCXX_RELEASE PROPERTY STRINGS v5.0.0 v7.0.0)
+option(LATENCY_BUILD_LEGACY_CLIENT "Build the dxFeed C API 5.11.0 comparison client" OFF)
 
 if(LATENCY_DXFCXX_RELEASE STREQUAL "v5.0.0")
     set(LATENCY_DXFCXX_ARCHIVE_SHA256 "7e903e48be8359df7665a30c1b9ac0d7a03431283065c9f60e520da2473f0ee2")
@@ -66,6 +67,18 @@ target_link_libraries(latency_analyzer PRIVATE latency_core)
 add_executable(latency_runner src/runner_main.cpp)
 target_link_libraries(latency_runner PRIVATE latency_core)
 
+if(LATENCY_BUILD_LEGACY_CLIENT)
+    include(cmake/LegacyDxFeedCApi.cmake)
+    latency_add_legacy_dxfeed_c_api()
+
+    add_executable(latency_legacy_client src/legacy_client.cpp)
+    target_compile_definitions(latency_legacy_client PRIVATE
+            LATENCY_DXFEED_C_API_VERSION="${LATENCY_DXFEED_C_API_VERSION}")
+    target_link_libraries(latency_legacy_client PRIVATE latency_core dxfeed-c-api::dxfeed-c-api)
+    add_custom_command(TARGET latency_legacy_client POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:dxfeed-c-api::dxfeed-c-api> $<TARGET_FILE_DIR:latency_legacy_client>)
+endif()
+
 foreach(target latency_server latency_client)
     add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:dxfcxx::graal> $<TARGET_FILE_DIR:${target}>)
@@ -79,9 +92,18 @@ elseif(UNIX)
     set_target_properties(latency_server latency_client PROPERTIES INSTALL_RPATH "$ORIGIN")
 endif()
 
+if(LATENCY_BUILD_LEGACY_CLIENT AND UNIX)
+    set_target_properties(latency_legacy_client PROPERTIES INSTALL_RPATH "$ORIGIN")
+endif()
+
 install(TARGETS latency_server latency_client latency_analyzer latency_runner RUNTIME DESTINATION bin)
 install(FILES $<TARGET_FILE:dxfcxx::graal> DESTINATION bin)
 install(FILES dxfeed.system.properties DESTINATION bin)
+
+if(LATENCY_BUILD_LEGACY_CLIENT)
+    install(TARGETS latency_legacy_client RUNTIME DESTINATION bin)
+    install(IMPORTED_RUNTIME_ARTIFACTS latency_dxfeed_c_api DESTINATION bin)
+endif()
 
 include(CTest)
 if(BUILD_TESTING)
@@ -102,4 +124,8 @@ if(BUILD_TESTING)
     add_test(NAME latency_tests COMMAND latency_tests)
     add_test(NAME latency_analyzer_help COMMAND latency_analyzer --help)
     add_test(NAME latency_runner_help COMMAND latency_runner --help)
+
+    if(LATENCY_BUILD_LEGACY_CLIENT)
+        add_test(NAME latency_legacy_client_help COMMAND latency_legacy_client --help)
+    endif()
 endif()
