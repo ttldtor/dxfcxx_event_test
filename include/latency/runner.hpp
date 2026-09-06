@@ -12,6 +12,27 @@
 
 namespace latency {
 
+/// Describes the purpose, controlled variables, and interpretation boundary of a benchmark experiment.
+struct BenchmarkExperiment {
+    /// Human-readable report title.
+    std::string title;
+
+    /// Question that the experiment is intended to answer.
+    std::string objective;
+
+    /// Independent variable changed between profiles or invocations.
+    std::string variable;
+
+    /// Workload and environment properties intentionally kept constant.
+    std::string controls;
+
+    /// Measurements used to evaluate the experiment.
+    std::string successCriteria;
+
+    /// Conclusions that the experiment cannot establish.
+    std::string limitations;
+};
+
 /// Describes one workload profile from a benchmark suite configuration.
 struct BenchmarkSuiteProfile {
     /// Stable profile name used in output file prefixes.
@@ -32,6 +53,9 @@ struct BenchmarkSuiteProfile {
 
 /// Contains global settings and workload profiles parsed from a suite configuration.
 struct BenchmarkSuite {
+    /// Optional experiment description embedded into generated reports.
+    BenchmarkExperiment experiment;
+
     /// Number of complete suite repetitions.
     std::size_t repetitions{};
 

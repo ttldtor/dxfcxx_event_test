@@ -97,8 +97,11 @@ The experiment compares complete release stacks. It cannot attribute the measure
 CXX API, Native SDK, or the QD update from 3.342 to 3.347. It runs over loopback on one Windows host, uses
 `STREAM_FEED` or `FEED`, and models 375 actively ticking symbols rather than the customer's full subscription
 universe or TimeAndSale snapshot/history traffic. The legacy customer client also used the old C API, which is not
-part of this release-stack comparison. The experiment isolates the current C++ API delivery path under controlled
-load; it does not certify the complete production topology.
+part of this release-stack comparison. That API does not implement the newer client-side FEED conflation mechanism,
+delivers events to its callback one at a time, and does not support the `TextMessage` event used for exact publication
+correlation here. A future legacy-client comparison would therefore require both a different, separately validated
+wire marker and explicit current-API `FEED` and `STREAM_FEED` controls. The experiment isolates the current C++ API
+delivery path under controlled load; it does not certify the complete production topology.
 
 Source results:
 

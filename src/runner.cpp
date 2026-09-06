@@ -4,6 +4,7 @@
 #include "latency/runner.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <charconv>
@@ -691,6 +692,32 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
         suite.aggregationPeriod = found->second;
     }
 
+    const std::array experimentSettings{
+        std::pair{"EXPERIMENT_TITLE", &suite.experiment.title},
+        std::pair{"EXPERIMENT_OBJECTIVE", &suite.experiment.objective},
+        std::pair{"EXPERIMENT_VARIABLE", &suite.experiment.variable},
+        std::pair{"EXPERIMENT_CONTROLS", &suite.experiment.controls},
+        std::pair{"EXPERIMENT_SUCCESS_CRITERIA", &suite.experiment.successCriteria},
+        std::pair{"EXPERIMENT_LIMITATIONS", &suite.experiment.limitations},
+    };
+    std::size_t experimentSettingCount{};
+
+    for (const auto &[name, target] : experimentSettings) {
+        if (const auto found = settings.find(name); found != settings.end()) {
+            if (found->second.empty()) {
+                return std::unexpected{std::format("{} must not be empty", name)};
+            }
+
+            *target = found->second;
+            ++experimentSettingCount;
+        }
+    }
+
+    if (experimentSettingCount != 0 && experimentSettingCount != experimentSettings.size()) {
+        return std::unexpected{
+            "Experiment metadata must define title, objective, variable, controls, success criteria, and limitations"};
+    }
+
     const std::vector<std::string_view> known{"REPETITIONS",
                                               "WARMUP",
                                               "DURATION",
@@ -704,7 +731,13 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
                                               "AGGREGATION_PERIOD",
                                               "COOLDOWN_SECONDS",
                                               "ADDRESS",
-                                              "LISTEN_ADDRESS"};
+                                              "LISTEN_ADDRESS",
+                                              "EXPERIMENT_TITLE",
+                                              "EXPERIMENT_OBJECTIVE",
+                                              "EXPERIMENT_VARIABLE",
+                                              "EXPERIMENT_CONTROLS",
+                                              "EXPERIMENT_SUCCESS_CRITERIA",
+                                              "EXPERIMENT_LIMITATIONS"};
 
     for (const auto &[key, value] : settings) {
         if (std::ranges::find(known, key) == known.end()) {

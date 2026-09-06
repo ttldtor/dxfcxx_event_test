@@ -197,6 +197,13 @@ A `PROFILE` line may override the endpoint role, events batch limit, and aggrega
 Command-line `--events-batch-limit` and `--aggregation-period` provide suite-wide overrides for profiles that do not
 specify them.
 
+A suite may describe its experiment with `EXPERIMENT_TITLE`, `EXPERIMENT_OBJECTIVE`, `EXPERIMENT_VARIABLE`,
+`EXPERIMENT_CONTROLS`, `EXPERIMENT_SUCCESS_CRITERIA`, and `EXPERIMENT_LIMITATIONS`. These settings are optional for
+backward compatibility, but when one is present all six are required and must be non-empty. The analyzer reads them
+from the preserved `suite.conf` and writes an `Experiment definition` section near the top of `REPORT.md`. Success
+criteria describe which measurements should be evaluated; they do not turn the report into an automatic pass/fail
+decision.
+
 For a short contract A/B, run `tools/conflation-diagnostic.conf` once with the default `feed` role and once with a
 `stream-feed` override. The task, symbol set, cadence, warm-up, and measurement duration remain identical:
 
@@ -468,6 +475,13 @@ The source-level distinction between normal `FEED` supersession and `STREAM_FEED
 [`benchmark-results/QD-FEED-DELIVERY-PATH.md`](benchmark-results/QD-FEED-DELIVERY-PATH.md). A controlled comparison
 of two CXX API, Native SDK, and QD release stacks is in
 [`benchmark-results/SDK-VERSION-COMPARISON.md`](benchmark-results/SDK-VERSION-COMPARISON.md).
+
+The legacy C API does not implement the newer client-side FEED conflation mechanism, delivers events to its callback
+one at a time, and does not support `TextMessage`, which this benchmark uses as the exact per-publication timestamp
+marker. A legacy-client comparison would therefore require a different marker carried by an event supported by
+both APIs, plus current-API `FEED` and `STREAM_FEED` controls that make the delivery-semantics difference explicit.
+The replacement marker must be validated for identical serialization and decoding before its latency results can
+be compared with the current reports.
 
 ## QD monitoring statistics
 

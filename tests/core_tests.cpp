@@ -223,6 +223,29 @@ TEST_CASE("monitoring fixture analysis") {
 TEST_CASE("repeated benchmark comparison files") {
     TemporaryDirectory repeatedFixture{std::filesystem::temp_directory_path() / "latency-repeated-fixture"};
 
+    {
+        std::ofstream suite{repeatedFixture.path() / "suite.conf"};
+        suite << R"(EXPERIMENT_TITLE=Controlled delivery experiment
+EXPERIMENT_OBJECTIVE=Determine whether the changed setting affects delivery.
+EXPERIMENT_VARIABLE=Endpoint setting.
+EXPERIMENT_CONTROLS=Compiler, workload, duration, and host.
+EXPERIMENT_SUCCESS_CRITERIA=Compare listener coverage, latency, QD drops, and resource use.
+EXPERIMENT_LIMITATIONS=Does not represent a production network.
+REPETITIONS=3
+WARMUP=1s
+DURATION=2s
+WINDOW=1s
+BATCH_TIMEOUT=3s
+STARTUP_TIMEOUT=4s
+MONITORING_PERIOD=1s
+CLIENT_ROLE=stream-feed
+COOLDOWN_SECONDS=0
+ADDRESS=127.0.0.1:7400
+LISTEN_ADDRESS=:7400
+PROFILE=example|SUB:Q1
+)";
+    }
+
     for (const auto repetition : {"r01", "r02", "r03"}) {
         const auto profile = std::format("example-{}", repetition);
         std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-summary.csv",
@@ -249,6 +272,15 @@ TEST_CASE("repeated benchmark comparison files") {
     std::ifstream report{repeatedFixture.path() / "REPORT.md"};
     const std::string reportText{std::istreambuf_iterator<char>{report}, {}};
 
+    CHECK(reportText.starts_with("# Controlled delivery experiment"));
+    CHECK(reportText.contains("## Experiment definition"));
+    CHECK(reportText.contains("**Objective:** Determine whether the changed setting affects delivery."));
+    CHECK(reportText.contains("**Changed variable:** Endpoint setting."));
+    CHECK(reportText.contains("**Controls:** Compiler, workload, duration, and host."));
+    CHECK(reportText.contains(
+        "**Evaluation criteria:** Compare listener coverage, latency, QD drops, and resource use."));
+    CHECK(reportText.contains("**Limitations:** Does not represent a production network."));
+    CHECK(reportText.contains("## Results"));
     CHECK(reportText.contains("| example | stream-feed | unknown | 0.000 ms | 3 |"));
     CHECK(reportText.contains("Listener coverage median"));
     CHECK(reportText.contains("Listener deficit median"));
@@ -262,6 +294,17 @@ TEST_CASE("repeated benchmark comparison files") {
     CHECK(reportText.contains("cannot locate TICKER supersession on the publisher or feed side"));
     CHECK(reportText.contains("must not be interpreted as zero"));
     CHECK_FALSE(reportText.contains("| n/a |"));
+
+    report.close();
+    std::filesystem::remove(repeatedFixture.path() / "suite.conf");
+    REQUIRE(writeBenchmarkComparison(repeatedFixture.path(), *analysis).has_value());
+
+    std::ifstream legacyReport{repeatedFixture.path() / "REPORT.md"};
+    const std::string legacyReportText{std::istreambuf_iterator<char>{legacyReport}, {}};
+
+    CHECK(legacyReportText.starts_with("# Repeated latency benchmark"));
+    CHECK_FALSE(legacyReportText.contains("## Experiment definition"));
+    CHECK(legacyReportText.contains("## Results"));
 }
 
 TEST_CASE("invalid monitoring inputs are rejected") {
@@ -294,6 +337,12 @@ TEST_CASE("the default isolate properties file enables nanosecond timestamps") {
 
 TEST_CASE("benchmark suite parsing and rotating execution plan") {
     std::istringstream input{R"(# benchmark suite
+EXPERIMENT_TITLE=Parser experiment
+EXPERIMENT_OBJECTIVE=Verify experiment metadata parsing.
+EXPERIMENT_VARIABLE=Test input.
+EXPERIMENT_CONTROLS=All other fixture values.
+EXPERIMENT_SUCCESS_CRITERIA=Every field is preserved.
+EXPERIMENT_LIMITATIONS=Parser test only.
 REPETITIONS=2
 WARMUP=1s
 DURATION=2s
@@ -314,6 +363,12 @@ PROFILE=second|SUB:T2|stream-feed|1|10ms
     const auto suite = parseBenchmarkSuite(input);
 
     REQUIRE(suite.has_value());
+    CHECK(suite->experiment.title == "Parser experiment");
+    CHECK(suite->experiment.objective == "Verify experiment metadata parsing.");
+    CHECK(suite->experiment.variable == "Test input.");
+    CHECK(suite->experiment.controls == "All other fixture values.");
+    CHECK(suite->experiment.successCriteria == "Every field is preserved.");
+    CHECK(suite->experiment.limitations == "Parser test only.");
     CHECK(suite->repetitions == 2);
     CHECK(suite->profiles.size() == 2);
     CHECK(suite->profiles[1].clientRole == "stream-feed");
@@ -333,6 +388,24 @@ PROFILE=second|SUB:T2|stream-feed|1|10ms
     CHECK(plan[1].aggregationPeriod == "10ms");
     CHECK(plan[2].prefix == "second-r02");
     CHECK(plan[3].prefix == "first-r02");
+
+    std::istringstream legacyInput{R"(REPETITIONS=1
+WARMUP=1s
+DURATION=2s
+WINDOW=1s
+BATCH_TIMEOUT=3s
+STARTUP_TIMEOUT=4s
+MONITORING_PERIOD=1s
+CLIENT_ROLE=feed
+COOLDOWN_SECONDS=0
+ADDRESS=127.0.0.1:7400
+LISTEN_ADDRESS=:7400
+PROFILE=legacy|SUB:Q1
+)"};
+    const auto legacySuite = parseBenchmarkSuite(legacyInput);
+
+    REQUIRE(legacySuite.has_value());
+    CHECK(legacySuite->experiment.title.empty());
 }
 
 TEST_CASE("invalid benchmark suite settings are rejected") {
@@ -341,4 +414,21 @@ UNKNOWN=value
 )"};
 
     CHECK_FALSE(parseBenchmarkSuite(input).has_value());
+
+    std::istringstream incompleteMetadata{R"(EXPERIMENT_TITLE=Incomplete metadata
+REPETITIONS=1
+WARMUP=1s
+DURATION=1s
+WINDOW=1s
+BATCH_TIMEOUT=1s
+STARTUP_TIMEOUT=1s
+MONITORING_PERIOD=1s
+CLIENT_ROLE=feed
+COOLDOWN_SECONDS=0
+ADDRESS=127.0.0.1:7400
+LISTEN_ADDRESS=:7400
+PROFILE=example|SUB:Q1
+)"};
+
+    CHECK_FALSE(parseBenchmarkSuite(incompleteMetadata).has_value());
 }

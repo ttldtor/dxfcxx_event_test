@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSL-1.0
 
 #include "latency/monitoring.hpp"
+#include "latency/runner.hpp"
 
 #include <algorithm>
 #include <array>
@@ -77,6 +78,51 @@ struct LatencyRunRow {
     double outliers{};
     bool integrityOk{};
 };
+
+/** Reads optional experiment metadata from the suite configuration preserved with a benchmark run. */
+std::expected<std::optional<BenchmarkExperiment>, std::string>
+readExperimentMetadata(const std::filesystem::path &runDirectory) {
+    const auto suitePath = runDirectory / "suite.conf";
+
+    if (!std::filesystem::exists(suitePath)) {
+        return std::nullopt;
+    }
+
+    const auto suite = readBenchmarkSuite(suitePath);
+
+    if (!suite) {
+        return std::unexpected{std::format("Unable to read experiment metadata: {}", suite.error())};
+    }
+
+    if (suite->experiment.title.empty()) {
+        return std::nullopt;
+    }
+
+    return suite->experiment;
+}
+
+/** Writes the report title and optional experiment definition. */
+void writeExperimentDefinition(std::ostream &output, const std::optional<BenchmarkExperiment> &experiment) {
+    if (!experiment) {
+        output << "# Repeated latency benchmark\n\n";
+
+        return;
+    }
+
+    output << std::format(R"(# {}
+
+## Experiment definition
+
+- **Objective:** {}
+- **Changed variable:** {}
+- **Controls:** {}
+- **Evaluation criteria:** {}
+- **Limitations:** {}
+
+)",
+                          experiment->title, experiment->objective, experiment->variable, experiment->controls,
+                          experiment->successCriteria, experiment->limitations);
+}
 
 /** Contains one minimum/median/maximum comparison row. */
 struct ComparisonRow {
@@ -1021,13 +1067,20 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
         writeComparisonRow(monitoringComparison, row);
     }
 
+    const auto experiment = readExperimentMetadata(runDirectory);
+
+    if (!experiment) {
+        return std::unexpected{experiment.error()};
+    }
+
     std::ofstream report;
 
     if (auto opened = openOutput(report, runDirectory / "REPORT.md"); !opened) {
         return opened;
     }
 
-    report << R"(# Repeated latency benchmark
+    writeExperimentDefinition(report, *experiment);
+    report << R"(## Results
 
 Run-level values are aggregated using the median; the range shows the minimum and maximum across independent repetitions. Latencies are in milliseconds.
 
