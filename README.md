@@ -319,6 +319,24 @@ interpreted as zero.
     --config ./tools/aggregation-stream-control.conf
 ```
 
+`tools/sdk-feed-control.conf` is the short release-stack FEED control. Run it from separately configured v5 and v7
+build directories to compare natural TICKER supersession with no artificial listener delay or notification
+aggregation. It performs three repetitions per stack and takes approximately seven minutes for each invocation:
+
+```powershell
+.\build-v5\Release\latency_runner.exe --binary-directory .\build-v5\Release `
+    --config .\tools\sdk-feed-control.conf
+.\build-v7\Release\latency_runner.exe --binary-directory .\build-v7\Release `
+    --config .\tools\sdk-feed-control.conf
+```
+
+```sh
+./build-v5/latency_runner --binary-directory ./build-v5 \
+    --config ./tools/sdk-feed-control.conf
+./build-v7/latency_runner --binary-directory ./build-v7 \
+    --config ./tools/sdk-feed-control.conf
+```
+
 Each output prefix includes its repetition, for example `150k-100ms-r02`. The analyzer additionally writes
 `latency-runs.csv`, `latency-comparison.csv`, `monitoring-comparison.csv`, and a concise `REPORT.md`. Comparison CSVs
 contain the minimum, median, and maximum of run-level values; original summaries and logs remain available for more

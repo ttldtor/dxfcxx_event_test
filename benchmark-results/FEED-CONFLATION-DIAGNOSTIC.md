@@ -97,3 +97,8 @@ periods. STREAM_FEED still produces fewer, larger callbacks and higher latency, 
 without discarding stream records. See the
 [`corrected STREAM_FEED aggregation-period control`](20260906T103104Z/AGGREGATION-STREAM-CONTROL.md). All nine
 rerun results have `Integrity = OK`; the previous boundary-correlation caveat no longer applies to this control.
+
+Finally, the matched [`release-stack comparison`](SDK-VERSION-COMPARISON.md) repeats the zero-aggregation FEED
+control on CXX API 5.0.0 / Native SDK 2.6.2 / QD 3.342 and CXX API 7.0.0 / Native SDK 3.2.0 / QD 3.347. Coverage is
+99.830% and 99.849%, respectively, with overlapping run ranges and zero QD drops. The newer stack therefore does not
+show a FEED supersession or latency regression under this workload.
