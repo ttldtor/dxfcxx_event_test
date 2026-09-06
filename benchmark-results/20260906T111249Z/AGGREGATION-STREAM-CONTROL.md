@@ -5,9 +5,12 @@ separate notification batching from FEED supersession. The client uses `STREAM_F
 symbols, 1,500 recurring events per publication, a 10 ms publication cadence, and a nominal rate of 150,000 events/s.
 Each aggregation period was repeated three times with a fresh server and client.
 
-The `environment.txt` commit identifies the checked-out base revision. The binaries for this run were built from
-that revision plus the working-tree change that passes `monitoring.stat` directly to both endpoint builders; the
-change and these results are intended to be committed together.
+The `environment.txt` commit identifies the checked-out base revision. A subsequent build-cache audit established
+that this run used dxFeed Graal CXX API v5.0.0 and Graal Native SDK 2.6.2, even though the source tree already pinned
+v7.0.0. The build directory retained a `FETCHCONTENT_SOURCE_DIR_DXFEEDGRAALCXXAPI` override from an older
+configuration. Treat this result as historical evidence for the older release stack, not as a v7.0.0 measurement.
+The release stacks were subsequently rebuilt and compared explicitly in
+[`SDK-VERSION-COMPARISON.md`](../SDK-VERSION-COMPARISON.md).
 
 ## Results
 

@@ -10,6 +10,11 @@ monitoring logs into machine-readable CSV files and compares repeated runs.
 The build requires CMake 3.21 or newer, a C++23 compiler, and network access for the pinned dxFeed Graal C++ API and
 Graal Native SDK archives.
 
+`LATENCY_DXFCXX_RELEASE` selects a supported release stack. It defaults to `v7.0.0`; `v5.0.0` is also pinned for
+controlled release comparisons. Use a separate build directory for every release because FetchContent selections
+are cached. The compiler, selected CXX API, its Native SDK, and QD dependency versions are recorded in each
+benchmark `environment.txt`.
+
 On Linux or macOS, use a single-configuration build:
 
 ```sh
@@ -19,6 +24,12 @@ cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
 ```
 
+For example, configure the older comparison stack with:
+
+```sh
+cmake -S . -B build-v5 -DCMAKE_BUILD_TYPE=Release -DLATENCY_DXFCXX_RELEASE=v5.0.0
+```
+
 On Windows, run the following from a Visual Studio developer shell:
 
 ```powershell
@@ -26,6 +37,12 @@ cmake -S . -B build -A x64 `
   -DDXFCXX_BUILD_DOC=OFF -DDXFCXX_BUILD_SAMPLES=OFF -DDXFCXX_BUILD_TOOLS=OFF
 cmake --build build --config Release --parallel 4
 ctest --test-dir build -C Release --output-on-failure
+```
+
+Quote the release definition when passing it from PowerShell:
+
+```powershell
+cmake -S . -B build-v5 -A x64 '-DLATENCY_DXFCXX_RELEASE=v5.0.0'
 ```
 
 The executables are under `build/` with a single-configuration generator and under `build/Release/` with Visual
@@ -412,9 +429,10 @@ date here.
 
 The client defaults to `STREAM_FEED`, so conflation does not intentionally hide intermediate updates. The benchmark
 suite selects `FEED` explicitly to reproduce normal feed semantics. Latency is stored in nanoseconds and displayed
-in microseconds. A value above `Q3 + 1.5 * IQR` for the current window is classified as an outlier. `STREAM_FEED`
-preserves intermediate updates, but its agent buffer is finite: QD uses `DROP_OLDEST` by default and increments the
-monitoring `Dropped` counter if a consumer falls far enough behind to overflow that buffer.
+in microseconds. A value above `Q3 + 1.5 * IQR` for the current window is classified as an outlier. The current QD
+implementation explicitly changes the receiving agent's overflow strategy to `BLOCK` for `STREAM_FEED`. This
+preserves intermediate updates by applying backpressure when its finite buffer fills. Other endpoint roles and QD
+buffers can use different overflow behavior, so the benchmark still records `Dropped` on both processes.
 
 The summary contains aggregate `event` and `batch` rows plus rows for each recurring event type. Their
 `expected_per_batch` value is the expected sample count for that row (`1` for `batch`). The delivery-accounting
@@ -427,6 +445,11 @@ conflation. Events whose timestamp marker was not delivered are counted as
 Initial `Profile` delivery is reported separately in the client log and is excluded from recurring latency/rate
 statistics. Event outliers are classified against the IQR threshold of their own event type and use the corresponding
 type-specific sample kind in the outliers file.
+
+The source-level distinction between normal `FEED` supersession and `STREAM_FEED` buffering is documented in
+[`benchmark-results/QD-FEED-DELIVERY-PATH.md`](benchmark-results/QD-FEED-DELIVERY-PATH.md). A controlled comparison
+of two CXX API, Native SDK, and QD release stacks is in
+[`benchmark-results/SDK-VERSION-COMPARISON.md`](benchmark-results/SDK-VERSION-COMPARISON.md).
 
 ## QD monitoring statistics
 

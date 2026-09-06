@@ -832,6 +832,10 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
     std::ofstream environment{runDirectory / "environment.txt"};
     environment << "started_utc=" << timestamp(false) << '\n';
     environment << "git_commit=" << gitCommit() << '\n';
+    environment << "cxx_compiler=" << LATENCY_CXX_COMPILER_ID << ' ' << LATENCY_CXX_COMPILER_VERSION << '\n';
+    environment << "dxfeed_graal_cxx_api_version=" << LATENCY_DXFCXX_VERSION << '\n';
+    environment << "dxfeed_graal_native_sdk_version=" << LATENCY_DXFG_VERSION << '\n';
+    environment << "qd_version=" << LATENCY_QD_VERSION << '\n';
 #ifdef _WIN32
     environment << "os=Windows\narchitecture="
 #    if defined(_M_ARM64)

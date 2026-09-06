@@ -79,6 +79,11 @@ The black-box controls now consistently point to per-record-key `FEED` supersess
 between record processing and C++ listener observation. The next useful step is targeted instrumentation or source
 tracing at the QD-to-listener boundary rather than further workload randomization.
 
+That source trace is now documented in [`QD-FEED-DELIVERY-PATH.md`](QD-FEED-DELIVERY-PATH.md). It identifies the
+QD TICKER storage update and per-key agent queue as the place where repeated states can be coalesced before Java
+event construction and the native C++ callback. It also shows that `STREAM_FEED` selects the STREAM contract and
+sets the receiving agent overflow strategy to `BLOCK`.
+
 The notification batch-limit experiment provides the next boundary:
 [`Event notification batch-limit benchmark`](20260905T210242Z/BATCH-LIMIT-ANALYSIS.md). With the limit forced to one,
 the connector still reads approximately 149,439 records/s with zero reported drops, while the listener sees only

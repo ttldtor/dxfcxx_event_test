@@ -19,9 +19,23 @@ add_custom_target(check-format
         VERBATIM)
 
 include(FetchContent)
+
+set(LATENCY_DXFCXX_RELEASE "v7.0.0" CACHE STRING "dxFeed Graal CXX API release used by the benchmark")
+set_property(CACHE LATENCY_DXFCXX_RELEASE PROPERTY STRINGS v5.0.0 v7.0.0)
+
+if(LATENCY_DXFCXX_RELEASE STREQUAL "v5.0.0")
+    set(LATENCY_DXFCXX_ARCHIVE_SHA256 "7e903e48be8359df7665a30c1b9ac0d7a03431283065c9f60e520da2473f0ee2")
+    set(LATENCY_QD_VERSION "3.342")
+elseif(LATENCY_DXFCXX_RELEASE STREQUAL "v7.0.0")
+    set(LATENCY_DXFCXX_ARCHIVE_SHA256 "7762ed3f95bf42a264060bee54dcc6fcc7c9d07fe71a59b547ec91c4407e0bc0")
+    set(LATENCY_QD_VERSION "3.347")
+else()
+    message(FATAL_ERROR "Unsupported LATENCY_DXFCXX_RELEASE: ${LATENCY_DXFCXX_RELEASE}")
+endif()
+
 FetchContent_Declare(dxFeedGraalCxxApi
-        URL "https://github.com/dxFeed/dxfeed-graal-cxx-api/archive/refs/tags/v7.0.0.tar.gz"
-        URL_HASH SHA256=7762ed3f95bf42a264060bee54dcc6fcc7c9d07fe71a59b547ec91c4407e0bc0
+        URL "https://github.com/dxFeed/dxfeed-graal-cxx-api/archive/refs/tags/${LATENCY_DXFCXX_RELEASE}.tar.gz"
+        URL_HASH SHA256=${LATENCY_DXFCXX_ARCHIVE_SHA256}
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(dxFeedGraalCxxApi)
 
@@ -33,6 +47,12 @@ endif()
 
 add_library(latency_core src/core.cpp src/monitoring.cpp src/runner.cpp)
 target_include_directories(latency_core PUBLIC include)
+target_compile_definitions(latency_core PRIVATE
+        LATENCY_CXX_COMPILER_ID="${CMAKE_CXX_COMPILER_ID}"
+        LATENCY_CXX_COMPILER_VERSION="${CMAKE_CXX_COMPILER_VERSION}"
+        LATENCY_DXFCXX_VERSION="${DXFCXX_VERSION}"
+        LATENCY_DXFG_VERSION="${DXFEED_GRAAL_NATIVE_SDK_VERSION}"
+        LATENCY_QD_VERSION="${LATENCY_QD_VERSION}")
 
 add_executable(latency_server src/server.cpp)
 target_link_libraries(latency_server PRIVATE latency_core dxfcxx::static)

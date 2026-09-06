@@ -1,0 +1,13 @@
+started_utc=2026-09-06T11:59:56Z
+git_commit=771e69bd0566e2fce23fe0ce988c09ca3c6b1f00
+dxfeed_graal_cxx_api_version=v5.0.0
+dxfeed_graal_native_sdk_version=2.6.2
+os=Windows
+architecture=x86_64
+processor_count=32
+binary_directory=C:\w\!active\dxfcxx_event_test\cmake-build-agent\Release
+suite_config=C:\w\!active\dxfcxx_event_test\tools\aggregation-stream-control.conf
+client_role=stream-feed
+listener_delay=0
+events_batch_limit=optimal
+aggregation_period=0
