@@ -1,13 +1,14 @@
 # SDK release-stack comparison
 
-This experiment compares two release stacks using the same benchmark revision, compiler, host, and controlled
-workloads. It answers whether the newer stack shows a regression in the isolated publisher-to-C++-listener path,
-both when every update is retained by `STREAM_FEED` and under normal conflating `FEED` semantics.
+This document records controlled release-stack comparisons using the same benchmark revision, compiler, host, and
+workloads. The original experiment compares v5.0.0 with v7.0.0 in both `STREAM_FEED` and conflating `FEED` modes. A
+follow-up compares v7.0.0 with v8.0.0 in `FEED` mode after the packed TimeAndSale field fix and Native SDK update.
 
 | Stack | dxFeed Graal CXX API | Graal Native SDK | Embedded `qd.version` |
 |---|---:|---:|---:|
 | Older | 5.0.0 | 2.6.2 | 3.342 |
-| Newer | 7.0.0 | 3.2.0 | 3.347 |
+| Previous | 7.0.0 | 3.2.0 | 3.347 |
+| Current | 8.0.0 | 3.2.13 | 3.353 |
 
 The CXX API and SDK versions are captured in each run's `environment.txt`. The QD versions were recovered from the
 `<qd.version>` Maven property embedded in the corresponding Native SDK DLL. The SDK 2.6.2 DLL also contains a QDS
@@ -86,22 +87,57 @@ Within each stack, the client read and server write rates match closely. The agg
 monitoring intervals that overlap startup and the idle drain tail, so its difference between stacks must not be
 interpreted as an offered-load difference; correlated publication counts provide the direct workload check.
 
+## v7.0.0 to v8.0.0 FEED follow-up
+
+The follow-up uses benchmark commit `ce767551fc7393c50e6ca3d28c0d5554305e8708` and the same shuffled
+375-symbol, 150,000-events/s FEED control. It was run in A-B-A order to expose host drift: three v7 repetitions,
+three v8 repetitions, and then three more v7 repetitions. No rebuild occurred between the measured blocks, and the
+two build directories used the same compiler and benchmark sources.
+
+| Block | Stack | Runs | Coverage | Event p50 | Event p99 | Event p99.9 | Callbacks | Client CPU | Server CPU |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| A1 | v7.0.0 / SDK 3.2.0 / QD 3.347 | 3 | 99.868% | 2.713 ms | 10.237 ms | 14.394 ms | 28,325 | 0.749% | 2.240% |
+| B | v8.0.0 / SDK 3.2.13 / QD 3.353 | 3 | 99.840% | 2.841 ms | 10.996 ms | 15.420 ms | 28,261 | 0.764% | 2.439% |
+| A2 | v7.0.0 / SDK 3.2.0 / QD 3.347 | 3 | 99.827% | 2.867 ms | 10.649 ms | 14.681 ms | 28,191 | 0.825% | 2.287% |
+
+The direct A1-to-B comparison would suggest increases of 4.7% at p50, 7.4% at p99, and 7.1% at p99.9. The A2
+control shows that the host also drifted during the experiment: its v7 p50 is slightly above v8 and its v7 p99 is
+closer to v8 than A1 was. Combining the six v7 run-level observations gives medians of 2.780 ms, 10.569 ms, and
+14.537 ms. Relative to those values, the three v8 medians are higher by 2.2%, 4.0%, and 6.1%, respectively.
+
+Every aggregate v7 and v8 latency range overlaps. The upward central estimate is also present in individual event
+types, most visibly in Trade p99, but nine sequential observations are not sufficient to distinguish a small stack
+effect from host drift. The conservative result is therefore that this test does not establish a v8 latency
+regression. It does identify a small signal worth checking with more balanced interleaved repetitions if a
+few-percent change is operationally important. Nothing resembles the customer's large latency spikes.
+
+Delivery behavior is stable. Combined v7 coverage is 99.8386% versus 99.8404% for v8, a difference of only 0.0018
+percentage points. All nine runs have zero missing batches and clock anomalies. Client and server QD monitoring
+report zero `Dropped`; client buffer high-water marks are zero and server maxima are at most one record. Callback
+counts and CPU use are comparable and show no saturation. As in the earlier FEED experiment, the small listener gap
+is compatible with normal TICKER supersession and is not evidence of transport loss.
+
+The separate v8 TimeAndSale test validates HISTORY snapshot-to-live behavior, but it is not a v7/v8 performance
+comparison: the v7 packed-index bug corrupts `TimeAndSale` timestamps when `setSequence()` follows `setTimeNanos()`,
+so a valid equivalent v7 HISTORY baseline cannot be produced through the public setters.
+
 ## Conclusion and limitations
 
-There is no measured end-to-end latency or delivery regression in the newer release stack for either workload.
-`STREAM_FEED` delivery remains complete. Normal `FEED` supersession remains small and statistically compatible with
-the older stack, while its median latency values are lower. Resource use is comparable. Neither control reproduces
-the customer's large latency spikes.
+The original v5-to-v7 controls show no end-to-end latency or delivery regression: `STREAM_FEED` delivery remains
+complete and v7 FEED median latency is lower. The v7-to-v8 follow-up also shows stable delivery and resources. Its
+v8 latency medians are slightly higher than the combined v7 controls, but the ranges overlap and temporal drift is
+visible, so the available observations do not establish a regression. None of the controls reproduces the
+customer's large latency spikes.
 
-The experiment compares complete release stacks. It cannot attribute the measured difference specifically to the
-CXX API, Native SDK, or the QD update from 3.342 to 3.347. It runs over loopback on one Windows host, uses
-`STREAM_FEED` or `FEED`, and models 375 actively ticking symbols rather than the customer's full subscription
-universe or TimeAndSale snapshot/history traffic. The legacy customer client also used the old C API, which is not
-part of this release-stack comparison. That API does not implement the newer client-side FEED conflation mechanism,
-delivers events to its callback one at a time, and does not support the `TextMessage` event used for exact publication
-correlation here. A future legacy-client comparison would therefore require both a different, separately validated
-wire marker and explicit current-API `FEED` and `STREAM_FEED` controls. The experiment isolates the current C++ API
-delivery path under controlled load; it does not certify the complete production topology.
+The experiments compare complete release stacks. They cannot attribute a measured difference specifically to the
+CXX API, Native SDK, or the QD updates from 3.342 to 3.347 and then 3.353. They run over loopback on one Windows host
+and model actively ticking symbols rather than the customer's full subscription universe. The legacy customer
+client also used the old C API, which is not part of this release-stack comparison. That API does not implement the
+newer client-side FEED conflation mechanism, delivers events to its callback one at a time, and does not support the
+`TextMessage` event used for exact publication correlation here. A legacy-client comparison therefore requires a
+different, separately validated wire marker and explicit current-API `FEED` and `STREAM_FEED` controls. The
+experiments isolate the current C++ API delivery path under controlled load; they do not certify the complete
+production topology.
 
 Source results:
 
@@ -121,3 +157,10 @@ Source results:
 - [Newer stack FEED environment](20260906T130202Z/environment.txt)
 - [Newer stack FEED aggregate latency CSV](20260906T130202Z/latency-comparison.csv)
 - [Newer stack FEED aggregate monitoring CSV](20260906T130202Z/monitoring-comparison.csv)
+- [v7 A1 FEED report](20260906T215026Z/REPORT.md)
+- [v7 A1 FEED environment](20260906T215026Z/environment.txt)
+- [v8 FEED report](20260906T215855Z/REPORT.md)
+- [v8 FEED environment](20260906T215855Z/environment.txt)
+- [v7 A2 FEED report](20260906T220817Z/REPORT.md)
+- [v7 A2 FEED environment](20260906T220817Z/environment.txt)
+- [v8 TimeAndSale snapshot-to-live report](20260906T213400Z/REPORT.md)

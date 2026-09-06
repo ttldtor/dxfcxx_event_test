@@ -1,0 +1,17 @@
+started_utc=2026-09-06T22:08:17Z
+git_commit=ce767551fc7393c50e6ca3d28c0d5554305e8708
+cxx_compiler=MSVC 19.51.36256.0
+dxfeed_graal_cxx_api_version=v7.0.0
+dxfeed_graal_native_sdk_version=3.2.0
+qd_version=3.347
+os=Windows
+architecture=x86_64
+processor_count=32
+binary_directory=C:\w\!active\dxfcxx_event_test\cmake-build-v7\Release
+suite_config=C:\w\!active\dxfcxx_event_test\tools\sdk-feed-control.conf
+client_role=feed
+listener_delay=0
+events_batch_limit=optimal
+aggregation_period=0
+time_series_prefill=2s
+time_series_history=1000
