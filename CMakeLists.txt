@@ -74,7 +74,7 @@ if(LATENCY_BUILD_LEGACY_CLIENT)
     add_executable(latency_legacy_client src/legacy_client.cpp)
     target_compile_definitions(latency_legacy_client PRIVATE
             LATENCY_DXFEED_C_API_VERSION="${LATENCY_DXFEED_C_API_VERSION}")
-    target_link_libraries(latency_legacy_client PRIVATE latency_core dxfeed-c-api::dxfeed-c-api)
+    target_link_libraries(latency_legacy_client PRIVATE latency_core dxfeed-c-api::dxfeed-c-api process::process)
     add_custom_command(TARGET latency_legacy_client POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:dxfeed-c-api::dxfeed-c-api> $<TARGET_FILE_DIR:latency_legacy_client>)
 endif()

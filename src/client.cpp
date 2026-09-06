@@ -1118,7 +1118,7 @@ int main(int argc, char **argv) {
         subscription->addEventListener([&collector, delay = config.listenerDelay](const auto &events) {
             collector.handleMarket(events, delay);
         });
-        subscription->addSymbols(pattern->symbols());
+        subscription->addSymbols(pattern->marketSymbols());
 
         auto profiles = feed->createSubscription(Profile::TYPE);
         profiles->addEventListener([&collector](const auto &events) {

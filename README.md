@@ -104,12 +104,14 @@ interval. Its main options are:
 | `--role` | `stream-feed` | Endpoint role: `stream-feed` preserves updates; `feed` permits conflation. |
 | `--output` | `latency` | Path and filename prefix for generated CSV files. |
 
-The task DSL is `SUB:<type><quantity>[;...][@<period>][#<symbols>][~<shuffle-seed>]`: `Q`, `T`, `E`, and `S` mean
+The task DSL is `SUB:<type><quantity>[;...][@<period>][#<symbols>][&<regional-sources>][~<shuffle-seed>]`: `Q`, `T`, `E`, and `S` mean
 Quote, Trade, TradeETH, and Summary. Each type may occur once and quantities must be positive. All configured types
 are recurring and contribute to the nominal event rate. The default period is `1s`. The optional final symbol count
 expands the subscribed instrument universe without changing the number of events published in each batch. It cannot
-be smaller than any configured event quantity. A final shuffle seed enables reproducible per-publication shuffling
-of the configured event-type blocks; events inside each block retain their order.
+be smaller than any configured event quantity. An optional regional-source count from 1 through 26 activates `&A`,
+`&B`, ... record keys in addition to the composite keys without changing the event count per publication. A final
+shuffle seed enables reproducible per-publication shuffling of the configured event-type blocks and regional-source
+selection.
 
 For example, `SUB:Q375;T375;E375;S375@10ms` publishes 1,500 recurring events every 10 ms (150,000 events/s).
 The common instrument universe contains 375 symbols named `SYM000` through `SYM374`; the numeric width is derived
@@ -122,6 +124,12 @@ have arrived, so subscription propagation is excluded from the configured warm-u
 For example, `SUB:Q375;T375;E375;S375@10ms#3750` still publishes 1,500 events every 10 ms, but subscribes to
 `SYM0000` through `SYM3749` and publishes 3,750 initial Profiles. Every recurring publication advances each event
 type by 375 symbols through this universe. This keeps throughput constant while varying subscription cardinality.
+
+`SUB:Q375;T375;E375;S375@10ms#375&26~22805` also remains at 1,500 events per publication and 150,000 events/s.
+It creates 10,125 market record keys per type (`375 × (composite + 26 regional sources)`) and deterministically
+distributes each publication across them. Profiles remain one per base instrument, so this task still publishes 375
+initial Profiles. The Graal client explicitly subscribes to those composite and regional symbols; the default legacy
+C API client adds only the 375 base symbols because that API performs its own regional expansion.
 
 `latency_analyzer` is a standalone post-processing utility and does not connect to dxFeed. It reads a directory of
 latency summaries and captured QD logs, then writes `monitoring.csv` and `monitoring-summary.csv`. Pass
@@ -138,7 +146,8 @@ into the same address space.
 
 The legacy client deliberately measures connectivity and delivery shape. It subscribes to the task's
 `Quote`, `Trade`, `TradeETH`, and `Summary` types plus `Profile`, then reports callback count, recurring event count,
-initial Profile count, and the largest legacy `data_count`. It does not report E2E latency: `Trade` and `Quote` expose
+initial Profile count, the largest legacy `data_count`, and measurement-interval CPU/RSS from
+[`ttldtor/Process`](https://github.com/ttldtor/Process). It does not report E2E latency: `Trade` and `Quote` expose
 `time_nanos`, while `Summary` and `Profile` do not expose an equivalent event timestamp, and none of those fields is
 the benchmark server's `publishEvents()` timestamp.
 
@@ -187,6 +196,10 @@ The ready-to-run `tools/legacy-api-comparison.conf` suite rotates three repetiti
 and default legacy C API clients at the same shuffled 150,000 composite events/s workload. It compares observable
 delivery and callback shape. It does not claim that a callback-rate difference proves a transport regression or
 that the two APIs expose equivalent latency timestamps.
+
+`tools/regional-fanout.conf` compares zero, one, four, and twenty-six active regional sources for both clients while
+holding the aggregate recurring rate at 150,000 events/s. This separates record-key routing and subscription fan-out
+from a simple increase in network throughput.
 
 Run it from the same legacy-enabled build with:
 

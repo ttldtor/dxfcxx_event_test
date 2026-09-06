@@ -94,6 +94,11 @@ struct DeliveryRunRow {
     double profiles{};
     double maximumDataCount{};
     double actualEventsPerSecond{};
+    double cpuCorePercent{std::numeric_limits<double>::quiet_NaN()};
+    double cpuHostPercent{std::numeric_limits<double>::quiet_NaN()};
+    double rssMeanBytes{std::numeric_limits<double>::quiet_NaN()};
+    double rssMaximumBytes{std::numeric_limits<double>::quiet_NaN()};
+    double resourceSamples{std::numeric_limits<double>::quiet_NaN()};
     std::string contract;
 };
 
@@ -760,6 +765,21 @@ std::expected<DeliveryRunRow, std::string> readDelivery(const std::filesystem::p
 
         return parseNumber(values[*index]);
     };
+    const auto optionalNumber = [&](std::string_view name) -> std::expected<double, std::string> {
+        const auto found = std::ranges::find(headings, name);
+
+        if (found == headings.end()) {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+
+        const auto index = static_cast<std::size_t>(found - headings.begin());
+
+        if (index >= values.size()) {
+            return std::unexpected(std::format("delivery result has no {} value: {}", name, path.string()));
+        }
+
+        return parseNumber(values[index]);
+    };
     const auto nominal = number("nominal_events_per_second");
     const auto callbacks = number("callbacks");
     const auto recurring = number("recurring_events");
@@ -770,10 +790,16 @@ std::expected<DeliveryRunRow, std::string> readDelivery(const std::filesystem::p
     const auto profiles = number("profiles");
     const auto maximumDataCount = number("maximum_data_count");
     const auto actualRate = number("actual_events_per_second");
+    const auto cpuCorePercent = optionalNumber("cpu_core_percent");
+    const auto cpuHostPercent = optionalNumber("cpu_host_percent");
+    const auto rssMeanBytes = optionalNumber("rss_mean_bytes");
+    const auto rssMaximumBytes = optionalNumber("rss_maximum_bytes");
+    const auto resourceSamples = optionalNumber("resource_samples");
     const auto contractIndex = indexOf("contract");
 
-    for (const auto *value : {&nominal, &callbacks, &recurring, &quotes, &trades, &tradeEths, &summaries, &profiles,
-                              &maximumDataCount, &actualRate}) {
+    for (const auto *value :
+         {&nominal, &callbacks, &recurring, &quotes, &trades, &tradeEths, &summaries, &profiles, &maximumDataCount,
+          &actualRate, &cpuCorePercent, &cpuHostPercent, &rssMeanBytes, &rssMaximumBytes, &resourceSamples}) {
         if (!*value) {
             return std::unexpected(value->error());
         }
@@ -783,19 +809,15 @@ std::expected<DeliveryRunRow, std::string> readDelivery(const std::filesystem::p
         return std::unexpected(contractIndex.error());
     }
 
-    return DeliveryRunRow{profile,
-                          parseBenchmarkProfile(profile),
-                          *nominal,
-                          *callbacks,
-                          *recurring,
-                          *quotes,
-                          *trades,
-                          *tradeEths,
-                          *summaries,
-                          *profiles,
-                          *maximumDataCount,
-                          *actualRate,
-                          values[*contractIndex]};
+    return DeliveryRunRow{profile,           parseBenchmarkProfile(profile),
+                          *nominal,          *callbacks,
+                          *recurring,        *quotes,
+                          *trades,           *tradeEths,
+                          *summaries,        *profiles,
+                          *maximumDataCount, *actualRate,
+                          *cpuCorePercent,   *cpuHostPercent,
+                          *rssMeanBytes,     *rssMaximumBytes,
+                          *resourceSamples,  values[*contractIndex]};
 }
 
 /** Writes the common header used by comparison CSV files. */
@@ -1062,7 +1084,9 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
 
     deliveryRuns << "\"profile\",\"scenario\",\"repetition\",\"nominal_events_per_second\",\"callbacks\","
                     "\"recurring_events\",\"quote\",\"trade\",\"trade_eth\",\"summary\",\"profiles\","
-                    "\"maximum_data_count\",\"actual_events_per_second\",\"contract\"\n";
+                    "\"maximum_data_count\",\"actual_events_per_second\",\"cpu_core_percent\","
+                    "\"cpu_host_percent\",\"rss_mean_bytes\",\"rss_maximum_bytes\",\"resource_samples\","
+                    "\"contract\"\n";
 
     for (const auto &row : deliveryRows) {
         writeColumn(deliveryRuns, row.profile, true);
@@ -1078,6 +1102,11 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
         writeColumn(deliveryRuns, row.profiles);
         writeColumn(deliveryRuns, row.maximumDataCount);
         writeColumn(deliveryRuns, row.actualEventsPerSecond);
+        writeColumn(deliveryRuns, row.cpuCorePercent);
+        writeColumn(deliveryRuns, row.cpuHostPercent);
+        writeColumn(deliveryRuns, row.rssMeanBytes);
+        writeColumn(deliveryRuns, row.rssMaximumBytes);
+        writeColumn(deliveryRuns, row.resourceSamples);
         writeColumn(deliveryRuns, row.contract);
         deliveryRuns << '\n';
     }
@@ -1099,11 +1128,21 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
     for (const auto &[scenario, rows] : deliveryScenarios) {
         for (const auto [name, member] : {std::pair{"actual_events_per_second", &DeliveryRunRow::actualEventsPerSecond},
                                           std::pair{"callbacks", &DeliveryRunRow::callbacks},
-                                          std::pair{"maximum_data_count", &DeliveryRunRow::maximumDataCount}}) {
+                                          std::pair{"maximum_data_count", &DeliveryRunRow::maximumDataCount},
+                                          std::pair{"cpu_core_percent", &DeliveryRunRow::cpuCorePercent},
+                                          std::pair{"cpu_host_percent", &DeliveryRunRow::cpuHostPercent},
+                                          std::pair{"rss_mean_bytes", &DeliveryRunRow::rssMeanBytes},
+                                          std::pair{"rss_maximum_bytes", &DeliveryRunRow::rssMaximumBytes}}) {
             std::vector<double> values;
 
             for (const auto *row : rows) {
-                values.push_back(row->*member);
+                if (std::isfinite(row->*member)) {
+                    values.push_back(row->*member);
+                }
+            }
+
+            if (values.empty()) {
+                continue;
             }
 
             writeComparisonRow(deliveryComparison, {scenario, "legacy-delivery", name, compareRuns(std::move(values))});
@@ -1259,35 +1298,57 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
 The legacy C API has no benchmark marker event, so these values describe callback delivery and callback shape; they
 are not timestamp-based E2E latency measurements. Rates are medians across repetitions.
 
-| Scenario | Contract | Runs | Nominal events/s | Observed events/s median (range) | Callbacks median | Maximum `data_count` |
-|---|---|---:|---:|---:|---:|---:|
+| Scenario | Contract | Runs | Nominal events/s | Observed events/s median (range) | Callbacks median | Maximum `data_count` | CPU, one-core basis | CPU, host basis | RSS mean / maximum |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
 )";
 
         for (const auto &[scenario, rows] : deliveryScenarios) {
             std::vector<double> rates;
             std::vector<double> callbacks;
             std::vector<double> maximumDataCounts;
+            std::vector<double> cpuCorePercents;
+            std::vector<double> cpuHostPercents;
+            std::vector<double> rssMeans;
+            std::vector<double> rssMaximums;
 
             for (const auto *row : rows) {
                 rates.push_back(row->actualEventsPerSecond);
                 callbacks.push_back(row->callbacks);
                 maximumDataCounts.push_back(row->maximumDataCount);
+
+                if (std::isfinite(row->cpuCorePercent)) {
+                    cpuCorePercents.push_back(row->cpuCorePercent);
+                    cpuHostPercents.push_back(row->cpuHostPercent);
+                    rssMeans.push_back(row->rssMeanBytes);
+                    rssMaximums.push_back(row->rssMaximumBytes);
+                }
             }
 
             const auto rate = compareRuns(std::move(rates));
             const auto callback = compareRuns(std::move(callbacks));
             const auto maximumDataCount = compareRuns(std::move(maximumDataCounts));
+            const auto cpuCore = compareRuns(std::move(cpuCorePercents));
+            const auto cpuHost = compareRuns(std::move(cpuHostPercents));
+            const auto rssMean = compareRuns(std::move(rssMeans));
+            const auto rssMaximum = compareRuns(std::move(rssMaximums));
             const auto *representative = rows.front();
-            report << std::format("| {} | {} | {} | {:.3f} | {:.3f} ({:.3f}–{:.3f}) | {:.3f} | {:.0f} |\n", scenario,
-                                  representative->contract, rate.runs, representative->nominalEventsPerSecond,
-                                  rate.median, rate.minimum, rate.maximum, callback.median, maximumDataCount.maximum);
+            const auto resourceText = [&](const RunComparison &value, double divisor, std::string_view suffix) {
+                return value.runs ? std::format("{:.3f}{}", value.median / divisor, suffix) : std::string{"n/a"};
+            };
+            report << std::format(
+                "| {} | {} | {} | {:.3f} | {:.3f} ({:.3f}–{:.3f}) | {:.3f} | {:.0f} | {} | {} | {} / {} |\n", scenario,
+                representative->contract, rate.runs, representative->nominalEventsPerSecond, rate.median, rate.minimum,
+                rate.maximum, callback.median, maximumDataCount.maximum, resourceText(cpuCore, 1.0, "%"),
+                resourceText(cpuHost, 1.0, "%"), resourceText(rssMean, 1'048'576.0, " MiB"),
+                resourceText(rssMaximum, 1'048'576.0, " MiB"));
         }
 
         report << R"(
 
-The synthetic server publishes only composite symbols. With the default legacy contract, the C API expands each
-Quote, Trade, TradeETH, and Summary subscription into the composite plus 26 regional symbols. Therefore subscription
-cardinality is intentionally much larger than the recurring composite event rate shown here.
+With the default legacy contract, the C API expands each base-symbol Quote, Trade, TradeETH, and Summary subscription
+into the composite plus 26 regional symbols. A task can publish a configured subset of those regional record keys
+while keeping its recurring event rate fixed. CPU uses both a one-core basis and a host-normalized basis; RSS is
+sampled by the cross-platform `ttldtor/Process` library during the measurement interval.
 
 )";
     }

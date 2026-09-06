@@ -148,6 +148,7 @@ class Generator {
         std::vector<std::shared_ptr<EventType>> publication;
         std::vector<std::size_t> poolOrder;
         std::array<std::uint64_t, 4> lastBlockCounts{};
+        std::uint64_t compositeEvents{}, regionalEvents{};
         std::uint32_t tick{};
         std::uint64_t publications{}, skippedDeadlines{};
         std::chrono::nanoseconds preparationTotal{}, preparationMaximum{};
@@ -159,7 +160,8 @@ class Generator {
     struct PendingTask {
         std::string command;
         latency::TaskPattern pattern;
-        std::vector<std::string> symbols;
+        std::vector<std::string> profileSymbols;
+        std::vector<std::string> marketSymbols;
     };
 
     bool containsAll(SubscriptionKind kind, const std::vector<std::string> &symbols) const {
@@ -171,12 +173,12 @@ class Generator {
     }
 
     bool subscriptionsReady(const PendingTask &pending) const {
-        if (!containsAll(SubscriptionKind::PROFILE, pending.symbols)) {
+        if (!containsAll(SubscriptionKind::PROFILE, pending.profileSymbols)) {
             return false;
         }
 
         return std::ranges::all_of(pending.pattern.items, [this, &pending](const auto &item) {
-            return containsAll(subscriptionKind(item.kind), pending.symbols);
+            return containsAll(subscriptionKind(item.kind), pending.marketSymbols);
         });
     }
 
@@ -217,12 +219,12 @@ class Generator {
     // Allocate one stable event object per subscribed record key. Each publication selects a rotating subset.
     static std::vector<EventPool> makeEventPools(const latency::TaskPattern &pattern) {
         std::vector<EventPool> pools;
-        const auto symbols = pattern.symbols();
+        const auto symbols = pattern.marketSymbols();
 
         pools.reserve(pattern.items.size());
 
         for (const auto &item : pattern.items) {
-            EventPool pool{item.kind, item.quantity};
+            EventPool pool{item.kind, item.quantity, {}};
 
             pool.events.reserve(symbols.size());
 
@@ -280,13 +282,26 @@ class Generator {
 
         ++active.lastBlockCounts[subscriptionKindIndex(subscriptionKind(lastKind))];
 
-        // Event fields identify the batch. A larger symbol universe changes record-key cardinality, not batch size.
+        // Event fields identify the batch. Composite/regional routing changes record-key cardinality, not batch size.
         for (const auto poolIndex : active.poolOrder) {
             const auto &pool = active.pools[poolIndex];
-            const auto first = active.publications * pool.quantity % pool.events.size();
+            const auto baseSymbolCount = active.pattern.symbolCount();
+            const auto first = active.publications * pool.quantity % baseSymbolCount;
+            auto regionalRandom = active.pattern.shuffleSeed.value_or(0x22805ULL) ^ active.publications ^
+                                  (static_cast<std::uint64_t>(poolIndex) << 32U);
 
             for (std::size_t i = 0; i < pool.quantity; ++i) {
-                const auto &event = pool.events[(first + i) % pool.events.size()];
+                const auto baseIndex = (first + i) % baseSymbolCount;
+                const auto source = active.pattern.regionalSourceCount
+                                        ? nextRandom(regionalRandom) % (active.pattern.regionalSourceCount + 1)
+                                        : 0;
+                const auto &event = pool.events[source * baseSymbolCount + baseIndex];
+
+                if (source) {
+                    ++active.regionalEvents;
+                } else {
+                    ++active.compositeEvents;
+                }
 
                 if (auto quote = event->sharedAs<Quote>()) {
                     quote->setBidSize(sequence);
@@ -343,13 +358,13 @@ class Generator {
         std::cout << std::format("Generator summary {}: publications={} skipped-deadlines={} "
                                  "actual-batches/s={:.3f} actual-events/s={:.3f} "
                                  "preparation-ms(avg/max)={:.3f}/{:.3f} publish-ms(avg/max)={:.3f}/{:.3f} "
-                                 "last-blocks(Q/T/E/S)={}/{}/{}/{}\n",
+                                 "routes(composite/regional)={}/{} last-blocks(Q/T/E/S)={}/{}/{}/{}\n",
                                  active.command, active.publications, active.skippedDeadlines, actualBatchesPerSecond,
                                  actualEventsPerSecond, milliseconds(active.preparationTotal) / publications,
                                  milliseconds(active.preparationMaximum),
                                  milliseconds(active.publishTotal) / publications, milliseconds(active.publishMaximum),
-                                 active.lastBlockCounts[0], active.lastBlockCounts[1], active.lastBlockCounts[2],
-                                 active.lastBlockCounts[3])
+                                 active.compositeEvents, active.regionalEvents, active.lastBlockCounts[0],
+                                 active.lastBlockCounts[1], active.lastBlockCounts[2], active.lastBlockCounts[3])
                   << std::flush;
     }
 
@@ -384,9 +399,11 @@ class Generator {
                                std::make_shared<TextMessage>(latency::markerSymbol(pending->command), "LATENCY_BATCH"),
                                std::move(publication), std::move(poolOrder)});
                 nextTick = std::chrono::steady_clock::now();
-                std::cout << std::format("Subscriptions ready for {} symbols. Started {} ({} events/batch, "
+                std::cout << std::format("Subscriptions ready for {} profile and {} market symbols. Started {} "
+                                         "({} events/batch, "
                                          "period={} ms, nominal={:.3f} events/s)\n",
-                                         pending->symbols.size(), pending->command, active->pattern.eventCount(),
+                                         pending->profileSymbols.size(), pending->marketSymbols.size(),
+                                         pending->command, active->pattern.eventCount(),
                                          active->pattern.publishPeriod.count(),
                                          active->pattern.nominalEventsPerSecond())
                           << std::flush;
@@ -448,10 +465,12 @@ class Generator {
                         std::cerr << "Rejected task at " << parsed.error().position << ": " << parsed.error().message
                                   << " [" << command.text << "]\n";
                     } else if (!active && !pending) {
-                        pending.emplace(PendingTask{command.text, *parsed, parsed->symbols()});
-                        std::cout << std::format("Waiting for subscriptions before starting {} ({} symbols)\n",
-                                                 command.text, pending->symbols.size())
-                                  << std::flush;
+                        pending.emplace(PendingTask{command.text, *parsed, parsed->symbols(), parsed->marketSymbols()});
+                        std::cout
+                            << std::format(
+                                   "Waiting for subscriptions before starting {} ({} profile, {} market symbols)\n",
+                                   command.text, pending->profileSymbols.size(), pending->marketSymbols.size())
+                            << std::flush;
                     } else if ((active && active->command != command.text) ||
                                (pending && pending->command != command.text)) {
                         // The protocol intentionally supports one active load profile at a time.
@@ -548,7 +567,7 @@ class Generator {
         {
             std::lock_guard lock{mutex_};
 
-            commands_.push_back(Command{type, std::move(text)});
+            commands_.push_back(Command{type, std::move(text), {}, {}});
         }
 
         cv_.notify_one();
@@ -581,7 +600,7 @@ class Generator {
         {
             std::lock_guard lock{mutex_};
 
-            commands_.push_back(Command{CommandType::SUBSCRIPTION_CLOSED, {}, subscription});
+            commands_.push_back(Command{CommandType::SUBSCRIPTION_CLOSED, {}, subscription, {}});
         }
 
         cv_.notify_one();

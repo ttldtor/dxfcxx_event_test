@@ -99,6 +99,11 @@ std::string TaskPattern::toString() const {
         result += std::to_string(*subscribedSymbolCount);
     }
 
+    if (regionalSourceCount) {
+        result.push_back('&');
+        result += std::to_string(regionalSourceCount);
+    }
+
     if (shuffleSeed) {
         result.push_back('~');
         result += std::to_string(*shuffleSeed);
@@ -169,6 +174,34 @@ std::vector<std::string> TaskPattern::symbols() const {
     return result;
 }
 
+std::size_t TaskPattern::marketSymbolCount() const {
+    const auto baseCount = symbolCount();
+
+    if (baseCount > std::numeric_limits<std::size_t>::max() / (regionalSourceCount + 1)) {
+        throw std::overflow_error("market symbol count overflows size_t");
+    }
+
+    return baseCount * (regionalSourceCount + 1);
+}
+
+std::vector<std::string> TaskPattern::marketSymbols() const {
+    const auto composite = symbols();
+    std::vector<std::string> result;
+
+    result.reserve(marketSymbolCount());
+    result.insert(result.end(), composite.begin(), composite.end());
+
+    for (std::size_t source = 0; source < regionalSourceCount; ++source) {
+        const auto suffix = static_cast<char>('A' + source);
+
+        for (const auto &symbol : composite) {
+            result.push_back(std::format("{}&{}", symbol, suffix));
+        }
+    }
+
+    return result;
+}
+
 std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
     constexpr std::string_view PREFIX = "SUB:";
 
@@ -178,6 +211,7 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
 
     const auto periodSeparator = text.find('@', PREFIX.size());
     const auto symbolSeparator = text.find('#', PREFIX.size());
+    const auto regionalSeparator = text.find('&', PREFIX.size());
     const auto shuffleSeparator = text.find('~', PREFIX.size());
 
     if (periodSeparator != std::string_view::npos && symbolSeparator != std::string_view::npos &&
@@ -195,11 +229,26 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
         return std::unexpected(ParseError{shuffleSeparator, "shuffle seed must follow symbol count"});
     }
 
+    if (periodSeparator != std::string_view::npos && regionalSeparator != std::string_view::npos &&
+        regionalSeparator < periodSeparator) {
+        return std::unexpected(ParseError{regionalSeparator, "regional source count must follow publish period"});
+    }
+
+    if (symbolSeparator != std::string_view::npos && regionalSeparator != std::string_view::npos &&
+        regionalSeparator < symbolSeparator) {
+        return std::unexpected(ParseError{regionalSeparator, "regional source count must follow symbol count"});
+    }
+
+    if (regionalSeparator != std::string_view::npos && shuffleSeparator != std::string_view::npos &&
+        shuffleSeparator < regionalSeparator) {
+        return std::unexpected(ParseError{shuffleSeparator, "shuffle seed must follow regional source count"});
+    }
+
     const auto separatorPosition = [&](std::size_t separator) {
         return separator == std::string_view::npos ? text.size() : separator;
     };
-    const auto patternEnd = std::min(
-        {separatorPosition(periodSeparator), separatorPosition(symbolSeparator), separatorPosition(shuffleSeparator)});
+    const auto patternEnd = std::min({separatorPosition(periodSeparator), separatorPosition(symbolSeparator),
+                                      separatorPosition(regionalSeparator), separatorPosition(shuffleSeparator)});
     std::size_t pos = PREFIX.size();
 
     if (pos == patternEnd) {
@@ -264,7 +313,8 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
     }
 
     if (periodSeparator != std::string_view::npos) {
-        const auto periodEnd = std::min(separatorPosition(symbolSeparator), separatorPosition(shuffleSeparator));
+        const auto periodEnd = std::min({separatorPosition(symbolSeparator), separatorPosition(regionalSeparator),
+                                         separatorPosition(shuffleSeparator)});
         const auto periodText = text.substr(periodSeparator + 1, periodEnd - periodSeparator - 1);
 
         if (periodText.empty()) {
@@ -285,7 +335,7 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
     }
 
     if (symbolSeparator != std::string_view::npos) {
-        const auto symbolEnd = separatorPosition(shuffleSeparator);
+        const auto symbolEnd = std::min(separatorPosition(regionalSeparator), separatorPosition(shuffleSeparator));
         const auto symbolText = text.substr(symbolSeparator + 1, symbolEnd - symbolSeparator - 1);
 
         if (symbolText.empty()) {
@@ -311,6 +361,35 @@ std::expected<TaskPattern, ParseError> parseTask(std::string_view text) {
         }
 
         task.subscribedSymbolCount = count;
+    }
+
+    if (regionalSeparator != std::string_view::npos) {
+        const auto regionalEnd = separatorPosition(shuffleSeparator);
+        const auto regionalText = text.substr(regionalSeparator + 1, regionalEnd - regionalSeparator - 1);
+
+        if (regionalText.empty()) {
+            return std::unexpected(ParseError{regionalSeparator + 1, "expected regional source count"});
+        }
+
+        if (regionalText.find('&') != std::string_view::npos) {
+            return std::unexpected(
+                ParseError{regionalSeparator + 1 + regionalText.find('&'), "duplicate regional source count"});
+        }
+
+        std::size_t count{};
+        const auto [ptr, ec] = std::from_chars(regionalText.data(), regionalText.data() + regionalText.size(), count);
+
+        if (ec != std::errc{} || ptr != regionalText.data() + regionalText.size() || count == 0 || count > 26) {
+            return std::unexpected(ParseError{regionalSeparator + 1, "regional source count must be from 1 to 26"});
+        }
+
+        task.regionalSourceCount = count;
+
+        try {
+            (void)task.marketSymbolCount();
+        } catch (const std::overflow_error &) {
+            return std::unexpected(ParseError{regionalSeparator + 1, "market symbol count is too large"});
+        }
     }
 
     if (shuffleSeparator != std::string_view::npos) {

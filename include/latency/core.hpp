@@ -45,6 +45,10 @@ struct TaskPattern {
     std::chrono::milliseconds publishPeriod{std::chrono::seconds{1}};
     /** Explicit subscribed symbol-universe size, or empty when the largest event quantity defines it. */
     std::optional<std::size_t> subscribedSymbolCount;
+
+    /** Number of active regional sources, from `A` onward, published in addition to composite symbols. */
+    std::size_t regionalSourceCount{};
+
     /** Seed for deterministic per-publication event-type block shuffling, or empty for source order. */
     std::optional<std::uint64_t> shuffleSeed;
 
@@ -72,6 +76,17 @@ struct TaskPattern {
 
     /** Returns the shared symbol universe used by the combined subscription and initial Profile state. */
     [[nodiscard]] std::vector<std::string> symbols() const;
+
+    /**
+     * Returns composite and configured regional symbols used by market-event subscriptions and publication pools.
+     *
+     * Composite symbols are followed by complete `&A`, `&B`, ... regional blocks. Profiles continue to use only
+     * the base symbols returned by `symbols()`.
+     */
+    [[nodiscard]] std::vector<std::string> marketSymbols() const;
+
+    /** Returns the number of composite and regional record keys for each recurring event type. */
+    [[nodiscard]] std::size_t marketSymbolCount() const;
 
     /**
      * Looks up the configured quantity for an event type.
@@ -103,10 +118,11 @@ struct ParseError {
 };
 
 /**
- * Parses a subscription task in the `SUB:<type><quantity>[;...][@<period>][#<symbols>][~<seed>]` DSL.
+ * Parses a subscription task in the `SUB:<type><quantity>[;...][@<period>][#<symbols>][&<regions>][~<seed>]` DSL.
  *
  * Supported type codes are `Q`, `T`, `E`, and `S`. Each type may occur at most once and its quantity must be positive.
  * An optional symbol count expands the subscribed universe without changing the events published per batch.
+ * An optional regional-source count from 1 to 26 expands market-event record keys without changing the batch size.
  * An optional shuffle seed deterministically changes the order of event-type blocks for each publication.
  *
  * @param text The task text, for example `SUB:Q100;S1;T5@100ms`.

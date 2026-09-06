@@ -4,6 +4,7 @@
 #include "latency/core.hpp"
 
 #include <DXFeed.h>
+#include <process/process.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -108,6 +109,54 @@ struct CallbackSnapshot {
     std::size_t tradeEths{};
     std::size_t summaries{};
     std::size_t profiles{};
+};
+
+/** Process resource measurements collected during the measurement interval. */
+struct ResourceStatistics {
+    /** CPU utilization where 100 percent represents one fully occupied logical core. */
+    double cpuCorePercent{};
+
+    /** CPU utilization normalized by the number of logical processors in the host. */
+    double cpuHostPercent{};
+
+    /** Arithmetic mean of sampled resident-set sizes in bytes. */
+    std::uint64_t rssMeanBytes{};
+
+    /** Largest sampled resident-set size in bytes. */
+    std::uint64_t rssMaximumBytes{};
+
+    /** Number of resident-set samples. */
+    std::size_t samples{};
+};
+
+/** Samples current-process CPU time and RSS through the cross-platform Process library. */
+class ResourceSampler final {
+    using Process = org::ttldtor::process::Process;
+
+    std::chrono::milliseconds initialCpu_{Process::getTotalProcessorTime()};
+    std::uint64_t rssTotal_{};
+    std::uint64_t rssMaximum_{};
+    std::size_t samples_{};
+
+    public:
+    /** Records the current resident-set size. */
+    void sample() {
+        const auto rss = Process::getPhysicalMemorySize();
+
+        rssTotal_ += rss;
+        rssMaximum_ = std::max(rssMaximum_, rss);
+        ++samples_;
+    }
+
+    /** Calculates interval CPU utilization and resident-set aggregates. */
+    [[nodiscard]] ResourceStatistics finish(double elapsedSeconds) const {
+        const auto cpu = Process::getTotalProcessorTime() - initialCpu_;
+        const auto cpuCorePercent = elapsedSeconds > 0 ? cpu.count() / 10.0 / elapsedSeconds : 0.0;
+        const auto processors = std::max(1U, std::thread::hardware_concurrency());
+
+        return {cpuCorePercent, cpuCorePercent / processors, samples_ ? rssTotal_ / samples_ : 0, rssMaximum_,
+                samples_};
+    }
 };
 
 /** Records an operating-system termination request. */
@@ -412,11 +461,19 @@ CallbackSnapshot operator-(const CallbackSnapshot &end, const CallbackSnapshot &
 }
 
 /** Waits for a duration or an asynchronous stop condition. */
-void observe(std::chrono::milliseconds duration, const CallbackState &state) {
+void observe(std::chrono::milliseconds duration, const CallbackState &state, ResourceSampler *resources = nullptr) {
     const auto deadline = std::chrono::steady_clock::now() + duration;
 
     while (!interrupted.load() && !state.terminated.load() && std::chrono::steady_clock::now() < deadline) {
+        if (resources) {
+            resources->sample();
+        }
+
         std::this_thread::sleep_for(50ms);
+    }
+
+    if (resources) {
+        resources->sample();
     }
 }
 
@@ -470,7 +527,7 @@ std::string_view contractName(Contract contract) {
 
 /** Writes one whole-run delivery row without claiming timestamp-based E2E latency. */
 void writeDelivery(const Config &config, const latency::TaskPattern &pattern, const CallbackSnapshot &measured,
-                   int maximumBatch, std::chrono::system_clock::time_point start,
+                   const ResourceStatistics &resources, int maximumBatch, std::chrono::system_clock::time_point start,
                    std::chrono::system_clock::time_point end, double elapsed) {
     auto path = config.output;
     path += "-delivery.csv";
@@ -483,12 +540,15 @@ void writeDelivery(const Config &config, const latency::TaskPattern &pattern, co
     output << "\"window_start_utc\",\"window_end_utc\",\"sample_kind\",\"expected_per_batch\","
               "\"nominal_events_per_second\",\"callbacks\",\"recurring_events\",\"quote\",\"trade\","
               "\"trade_eth\",\"summary\",\"profiles\",\"maximum_data_count\","
-              "\"actual_events_per_second\",\"contract\"\n";
-    output << std::format("\"{}\",\"{}\",\"event\",{},{:.3f},{},{},{},{},{},{},{},{},{:.3f},\"{}\"\n", formatUtc(start),
-                          formatUtc(end), pattern.eventCount(), pattern.nominalEventsPerSecond(), measured.callbacks,
-                          measured.recurringEvents, measured.quotes, measured.trades, measured.tradeEths,
-                          measured.summaries, measured.profiles, maximumBatch,
-                          elapsed > 0 ? measured.recurringEvents / elapsed : 0.0, contractName(config.contract));
+              "\"actual_events_per_second\",\"cpu_core_percent\",\"cpu_host_percent\","
+              "\"rss_mean_bytes\",\"rss_maximum_bytes\",\"resource_samples\",\"contract\"\n";
+    output << std::format(
+        "\"{}\",\"{}\",\"event\",{},{:.3f},{},{},{},{},{},{},{},{},{:.3f},{:.3f},{:.3f},{},{},{},\"{}\"\n",
+        formatUtc(start), formatUtc(end), pattern.eventCount(), pattern.nominalEventsPerSecond(), measured.callbacks,
+        measured.recurringEvents, measured.quotes, measured.trades, measured.tradeEths, measured.summaries,
+        measured.profiles, maximumBatch, elapsed > 0 ? measured.recurringEvents / elapsed : 0.0,
+        resources.cpuCorePercent, resources.cpuHostPercent, resources.rssMeanBytes, resources.rssMaximumBytes,
+        resources.samples, contractName(config.contract));
 }
 
 } // namespace
@@ -531,19 +591,27 @@ int main(int argc, char **argv) {
         const auto before = snapshot(state);
         const auto startedSteady = std::chrono::steady_clock::now();
         const auto startedWall = std::chrono::system_clock::now();
+        ResourceSampler resources;
 
-        observe(config.duration, state);
+        observe(config.duration, state, &resources);
 
         const auto endedWall = std::chrono::system_clock::now();
         const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - startedSteady).count();
         const auto measured = snapshot(state) - before;
+        const auto resourceStatistics = resources.finish(elapsed);
 
-        writeDelivery(config, *pattern, measured, state.maximumBatch.load(), startedWall, endedWall, elapsed);
+        writeDelivery(config, *pattern, measured, resourceStatistics, state.maximumBatch.load(), startedWall, endedWall,
+                      elapsed);
 
         std::cout << std::format("Legacy summary: elapsed={:.3f}s callbacks={} recurring-events={} profiles={} "
                                  "maximum-data-count={} actual-events/s={:.3f}\n",
                                  elapsed, measured.callbacks, measured.recurringEvents, measured.profiles,
                                  state.maximumBatch.load(), elapsed > 0 ? measured.recurringEvents / elapsed : 0.0);
+        std::cout << std::format("Legacy resources: cpu-core={:.3f}% cpu-host={:.3f}% rss-mean={:.3f} MiB "
+                                 "rss-maximum={:.3f} MiB samples={}\n",
+                                 resourceStatistics.cpuCorePercent, resourceStatistics.cpuHostPercent,
+                                 resourceStatistics.rssMeanBytes / 1'048'576.0,
+                                 resourceStatistics.rssMaximumBytes / 1'048'576.0, resourceStatistics.samples);
 
         if (interrupted.load()) {
             return 130;

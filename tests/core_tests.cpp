@@ -119,6 +119,20 @@ TEST_CASE("task and duration parsing") {
     CHECK(shuffled->shuffleSeed == 22805);
     CHECK(shuffled->toString() == "SUB:Q375;T375;E375;S375@10ms#375~22805");
 
+    const auto regional = parseTask("SUB:Q375;T375;E375;S375@10ms#375&2~22805");
+
+    REQUIRE(regional.has_value());
+    CHECK(regional->regionalSourceCount == 2);
+    CHECK(regional->eventCount() == 1500);
+    CHECK(regional->symbolCount() == 375);
+    CHECK(regional->marketSymbolCount() == 1125);
+    CHECK(regional->toString() == "SUB:Q375;T375;E375;S375@10ms#375&2~22805");
+    REQUIRE(regional->marketSymbols().size() == 1125);
+    CHECK(regional->marketSymbols()[0] == "SYM000");
+    CHECK(regional->marketSymbols()[374] == "SYM374");
+    CHECK(regional->marketSymbols()[375] == "SYM000&A");
+    CHECK(regional->marketSymbols().back() == "SYM374&B");
+
     CHECK_FALSE(parseTask("SUB:").has_value());
     CHECK_FALSE(parseTask("SUB:Q0").has_value());
     CHECK_FALSE(parseTask("SUB:Q1;Q2").has_value());
@@ -138,6 +152,13 @@ TEST_CASE("task and duration parsing") {
     CHECK_FALSE(parseTask("SUB:Q10~seed").has_value());
     CHECK_FALSE(parseTask("SUB:Q10~1~2").has_value());
     CHECK_FALSE(parseTask("SUB:Q10~1@10ms").has_value());
+    CHECK_FALSE(parseTask("SUB:Q10&").has_value());
+    CHECK_FALSE(parseTask("SUB:Q10&0").has_value());
+    CHECK_FALSE(parseTask("SUB:Q10&27").has_value());
+    CHECK_FALSE(parseTask("SUB:Q10&1&2").has_value());
+    CHECK_FALSE(parseTask("SUB:Q10&1@10ms").has_value());
+    CHECK_FALSE(parseTask("SUB:Q10&1#20").has_value());
+    CHECK_FALSE(parseTask("SUB:Q10~1&2").has_value());
     CHECK_FALSE(parseTask("SUB:Q999999999999999999999999999999").has_value());
 
     CHECK(parseDuration("10s") == 10s);
@@ -261,8 +282,8 @@ PROFILE=example|SUB:Q1
                                    repeatedFixture.path() / std::format("{}-client.log", legacyProfile));
         std::ofstream delivery{repeatedFixture.path() / std::format("{}-delivery.csv", legacyProfile)};
         delivery
-            << R"("window_start_utc","window_end_utc","sample_kind","expected_per_batch","nominal_events_per_second","callbacks","recurring_events","quote","trade","trade_eth","summary","profiles","maximum_data_count","actual_events_per_second","contract"
-"2026-01-02T00:00:00.000Z","2026-01-02T23:59:00.000Z","event",4,400,1200,1200,300,300,300,300,0,1,400,"default"
+            << R"("window_start_utc","window_end_utc","sample_kind","expected_per_batch","nominal_events_per_second","callbacks","recurring_events","quote","trade","trade_eth","summary","profiles","maximum_data_count","actual_events_per_second","cpu_core_percent","cpu_host_percent","rss_mean_bytes","rss_maximum_bytes","resource_samples","contract"
+"2026-01-02T00:00:00.000Z","2026-01-02T23:59:00.000Z","event",4,400,1200,1200,300,300,300,300,0,1,400,25,2.5,104857600,125829120,120,"default"
 )";
     }
 
