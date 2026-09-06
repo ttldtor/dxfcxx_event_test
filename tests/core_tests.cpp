@@ -159,6 +159,15 @@ TEST_CASE("task and duration parsing") {
     CHECK(monitoringPeriodPropertyValue(std::nullopt) == "0");
 }
 
+TEST_CASE("task marker symbols use a separate control channel") {
+    const auto symbol = markerSymbol("SUB:Q375;T375@10ms");
+
+    CHECK(symbol == "LATENCY_MARKER:SUB:Q375;T375@10ms");
+    CHECK(isMarkerSymbol(symbol));
+    CHECK_FALSE(isMarkerSymbol("SUB:Q375;T375@10ms"));
+    CHECK_FALSE(parseTask(symbol).has_value());
+}
+
 TEST_CASE("statistics and benchmark profile comparison") {
     const auto stats = calculateStatistics({1, 1, 2, 2, 100});
 
@@ -251,6 +260,7 @@ TEST_CASE("repeated benchmark comparison files") {
     CHECK(reportText.contains("| Scenario | Write records/s | Write lag | CPU | Maximum buffer | Maximum dropped |"));
     CHECK(reportText.contains("`Dropped = 0` rules out drops counted by the corresponding QD endpoint"));
     CHECK(reportText.contains("cannot locate TICKER supersession on the publisher or feed side"));
+    CHECK(reportText.contains("must not be interpreted as zero"));
     CHECK_FALSE(reportText.contains("| n/a |"));
 }
 

@@ -14,6 +14,8 @@
 
 namespace latency {
 namespace {
+constexpr std::string_view MARKER_SYMBOL_PREFIX = "LATENCY_MARKER:";
+
 /** Returns the zero-padded symbol width required for a quantity. */
 std::size_t symbolWidth(std::size_t quantity) {
     return std::max<std::size_t>(2, std::to_string(quantity - 1).size());
@@ -35,6 +37,14 @@ std::optional<EventKind> parseKind(char value) {
     }
 }
 } // namespace
+
+std::string markerSymbol(std::string_view task) {
+    return std::format("{}{}", MARKER_SYMBOL_PREFIX, task);
+}
+
+bool isMarkerSymbol(std::string_view symbol) {
+    return symbol.starts_with(MARKER_SYMBOL_PREFIX);
+}
 
 std::size_t TaskPattern::eventCount() const {
     std::size_t result = 0;

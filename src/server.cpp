@@ -360,9 +360,10 @@ class Generator {
 
                 publication.reserve(pending->pattern.eventCount() + 1);
                 std::iota(poolOrder.begin(), poolOrder.end(), 0);
-                active.emplace(ActiveTask{pending->command, pending->pattern, std::move(pools),
-                                          std::make_shared<TextMessage>(pending->command, "LATENCY_BATCH"),
-                                          std::move(publication), std::move(poolOrder)});
+                active.emplace(
+                    ActiveTask{pending->command, pending->pattern, std::move(pools),
+                               std::make_shared<TextMessage>(latency::markerSymbol(pending->command), "LATENCY_BATCH"),
+                               std::move(publication), std::move(poolOrder)});
                 nextTick = std::chrono::steady_clock::now();
                 std::cout << std::format("Subscriptions ready for {} symbols. Started {} ({} events/batch, "
                                          "period={} ms, nominal={:.3f} events/s)\n",
@@ -661,14 +662,22 @@ int main(int argc, char **argv) {
             [&generator](const auto &symbols) {
                 for (const auto &symbol : symbols) {
                     if (symbol.isStringSymbol()) {
-                        generator.enqueueControl(CommandType::START, symbol.asStringSymbol());
+                        const auto text = symbol.asStringSymbol();
+
+                        if (!latency::isMarkerSymbol(text)) {
+                            generator.enqueueControl(CommandType::START, text);
+                        }
                     }
                 }
             },
             [&generator](const auto &symbols) {
                 for (const auto &symbol : symbols) {
                     if (symbol.isStringSymbol()) {
-                        generator.enqueueControl(CommandType::STOP, symbol.asStringSymbol());
+                        const auto text = symbol.asStringSymbol();
+
+                        if (!latency::isMarkerSymbol(text)) {
+                            generator.enqueueControl(CommandType::STOP, text);
+                        }
                     }
                 }
             },

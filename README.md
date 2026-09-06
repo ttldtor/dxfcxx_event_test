@@ -292,6 +292,10 @@ takes approximately 15 minutes:
     --config .\tools\aggregation-stream-control.conf
 ```
 
+With the current Graal Native SDK build, a `STREAM_FEED` endpoint does not emit the periodic client-side lines that
+the monitoring parser recognizes. Its client monitoring cells are therefore reported as `n/a`, not as zero. Exact
+listener coverage, latency, callback, and server-side monitoring measurements remain available.
+
 ```sh
 ./build/latency_runner --binary-directory ./build \
     --config ./tools/aggregation-stream-control.conf

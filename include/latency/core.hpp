@@ -115,6 +115,22 @@ struct ParseError {
 std::expected<TaskPattern, ParseError> parseTask(std::string_view text);
 
 /**
+ * Builds the persistent `TextMessage` symbol used to deliver timestamp markers for a task.
+ *
+ * @param task The task-control symbol.
+ * @return A marker symbol that cannot be parsed as a task command.
+ */
+std::string markerSymbol(std::string_view task);
+
+/**
+ * Tests whether a `TextMessage` symbol belongs to the timestamp-marker channel.
+ *
+ * @param symbol The symbol to inspect.
+ * @return `true` for symbols produced by `markerSymbol`.
+ */
+bool isMarkerSymbol(std::string_view symbol);
+
+/**
  * Returns the display name of an event type.
  *
  * @param kind The event type.

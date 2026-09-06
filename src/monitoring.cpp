@@ -1154,8 +1154,10 @@ The table shows medians across repetitions. Lag is in milliseconds; dropped is t
     report << R"(
 
 `Dropped = 0` rules out drops counted by the corresponding QD endpoint, but it does not rule out normal FEED conflation.
-The current measurements cannot locate TICKER supersession on the publisher or feed side. Similar server write and
-client read rates make transport loss unlikely, but they are interval averages rather than a record-by-record audit.
+The current measurements cannot locate TICKER supersession on the publisher or feed side. A monitoring value of
+`n/a` means that the endpoint log emitted no parseable sample; it must not be interpreted as zero. When both rates
+are available, similar server write and client read rates make transport loss unlikely, but they are interval
+averages rather than a record-by-record audit.
 Low average CPU, buffer, and network utilization also do not exclude conflation: a short burst only has to overtake
 listener processing for the same record and symbol before the next monitoring sample.
 )";

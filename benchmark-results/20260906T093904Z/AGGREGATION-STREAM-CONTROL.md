@@ -40,6 +40,13 @@ marker uses a separate subscription, so shutdown or window-boundary ordering can
 market events. This is a correlation-boundary issue, not evidence of lost market events, but it makes the analyzer
 return exit code 1 and mark those two runs `CHECK`.
 
+This was subsequently traced to the benchmark protocol rather than STREAM delivery. A marker could be consumed at
+the end of warm-up while the aggregated market callback for the same sequence crossed into the measurement window;
+the original client forgot the marker and later classified the complete 1,500-event callback as uncorrelated. The
+client now excludes every sequence observed on either side of the warm-up boundary and keeps timestamp markers on a
+separate symbol while stopping the generator. Five short repetitions of the corrected 10 ms control completed with
+`Integrity = OK`, zero uncorrelated events, and zero missing batches. The historical CSV files above remain unchanged.
+
 ## Conclusion
 
 The control strengthens the client-side FEED supersession explanation. Connector-read counters from the FEED runs
@@ -54,4 +61,3 @@ Source files:
 - [`latency-comparison.csv`](latency-comparison.csv)
 - [`monitoring-comparison.csv`](monitoring-comparison.csv)
 - [`run-manifest.csv`](run-manifest.csv)
-

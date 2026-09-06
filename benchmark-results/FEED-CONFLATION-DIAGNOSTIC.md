@@ -45,9 +45,10 @@ that queues updates instead of retaining only the latest ticker state.
   conflation would require finer instrumentation to exclude completely.
 - The client monitoring lines are not emitted for the current `STREAM_FEED` endpoint, so its client monitoring
   values are reported as `n/a`, not zero. Exact listener accounting still shows zero deficit in all three runs.
-- Small `excess_events` values in `FEED` runs can occur because control markers and market events use separate
-  subscriptions and can be observed in a different order near publication boundaries. The report marks these runs
-  as `CHECK`; this does not change the large role-dependent difference.
+- Historical `CHECK` results near measurement boundaries can include correlation artifacts because timestamp
+  markers and market events use separate subscriptions. The client now excludes complete sequences observed during
+  warm-up and retains a separate marker symbol through shutdown. Existing result CSV files are intentionally not
+  rewritten; this correction does not change the large role-dependent coverage difference.
 - The current workload uses 375 symbols and reproduces an event rate, not the customer's full subscription
   cardinality. Symbol-cardinality experiments should keep the event rate constant while rotating updates across a
   larger subscribed universe.

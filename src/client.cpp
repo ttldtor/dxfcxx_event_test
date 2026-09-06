@@ -38,6 +38,7 @@ std::atomic_bool interrupted{};
 constexpr std::array EVENT_KINDS{latency::EventKind::QUOTE, latency::EventKind::TRADE, latency::EventKind::TRADE_ETH,
                                  latency::EventKind::SUMMARY};
 constexpr std::string_view MONITORING_STAT_PROPERTY = "monitoring.stat";
+constexpr auto CALLBACK_QUIET_PERIOD = 500ms;
 
 /** Selects the dxFeed endpoint contract used by the benchmark client. */
 enum class ClientRole {
@@ -267,7 +268,7 @@ class Collector {
     std::condition_variable profilesCv_;
     bool measuring_{};
     bool acceptingNewBatches_{};
-    std::optional<std::int32_t> startBoundarySequence_;
+    std::unordered_set<std::int32_t> preMeasurementSequences_;
     std::vector<latency::Sample> eventWindow_, batchWindow_;
     std::vector<std::int64_t> callbackSizeWindow_, callbackDurationWindow_;
     std::array<std::vector<std::int64_t>, EVENT_KINDS.size()> eventGlobalByKind_;
@@ -460,16 +461,11 @@ class Collector {
         }
     }
 
-    // The first sequence observed after the warm-up may already be partially delivered. Exclude that whole
-    // publication from the measured set. After the measurement deadline, only batches already in flight may finish.
+    // Publications observed during warm-up can straddle the measurement boundary because marker and market events
+    // use separate subscriptions. Exclude every such sequence. After the stop request, accept tail publications
+    // until both subscriptions become quiet.
     bool acceptBatch(std::int32_t sequence) {
-        if (!startBoundarySequence_) {
-            startBoundarySequence_ = sequence;
-
-            return false;
-        }
-
-        if (sequence == *startBoundarySequence_) {
+        if (preMeasurementSequences_.contains(sequence)) {
             return false;
         }
 
@@ -499,6 +495,18 @@ class Collector {
         }
 
         if (!measuring_) {
+            for (const auto &event : events) {
+                if (const auto marker = event->sharedAs<TextMessage>(); marker && markerTimestamp(marker->getText())) {
+                    preMeasurementSequences_.insert(marker->getSequence());
+
+                    continue;
+                }
+
+                if (const auto description = describe(event); description && description->sequence) {
+                    preMeasurementSequences_.insert(*description->sequence);
+                }
+            }
+
             return;
         }
 
@@ -648,7 +656,6 @@ class Collector {
         pending_.clear();
         callbacksWindow_ = negativeWindow_ = missingWindow_ = 0;
         deliveryWindow_ = {};
-        startBoundarySequence_.reset();
         acceptingNewBatches_ = true;
         measuring_ = true;
     }
@@ -1117,7 +1124,9 @@ int main(int argc, char **argv) {
         control->addEventListener([&collector](const auto &events) {
             collector.handle(events);
         });
-        control->addSymbols(config.task);
+        const auto timestampMarkerSymbol = latency::markerSymbol(config.task);
+
+        control->addSymbols(std::vector{config.task, timestampMarkerSymbol});
 
         const auto effectiveAggregationPeriodMs = subscription->getAggregationPeriod().getTime();
         Reporter reporter{config.output, *pattern, config.role, subscription->getEventsBatchLimit(),
@@ -1139,6 +1148,7 @@ int main(int argc, char **argv) {
             const auto received = collector.profileCount();
 
             control->removeSymbols(config.task);
+            control->removeSymbols(timestampMarkerSymbol);
             endpoint->closeAndAwaitTermination();
 
             if (interrupted.load()) {
@@ -1157,6 +1167,7 @@ int main(int argc, char **argv) {
 
         if (!waitFor(config.warmup)) {
             control->removeSymbols(config.task);
+            control->removeSymbols(timestampMarkerSymbol);
             endpoint->closeAndAwaitTermination();
 
             return 130;
@@ -1186,24 +1197,28 @@ int main(int argc, char **argv) {
             }
         }
 
-        collector.endMeasurement();
         control->removeSymbols(config.task);
         const auto drainDeadline = std::chrono::steady_clock::now() + config.batchTimeout;
         auto lastActivity = collector.activity();
         auto quietSince = std::chrono::steady_clock::now();
 
-        // Stop the publisher, then retain already-started sequences until callbacks have remained quiet long enough.
-        while (collector.pendingCount() && std::chrono::steady_clock::now() < drainDeadline && !interrupted.load()) {
+        // Removing the control symbol stops the publisher asynchronously. Keep accepting tail publications until
+        // both subscriptions remain quiet and every correlated publication is complete.
+        while (std::chrono::steady_clock::now() < drainDeadline && !interrupted.load()) {
             std::this_thread::sleep_for(100ms);
             const auto activity = collector.activity();
 
             if (activity != lastActivity) {
                 lastActivity = activity;
                 quietSince = std::chrono::steady_clock::now();
-            } else if (std::chrono::steady_clock::now() - quietSince >= 500ms) {
+            } else if (!collector.pendingCount() &&
+                       std::chrono::steady_clock::now() - quietSince >= CALLBACK_QUIET_PERIOD) {
                 break;
             }
         }
+
+        collector.endMeasurement();
+        control->removeSymbols(timestampMarkerSymbol);
 
         const auto finalWall = latency::unixNanosNow();
         auto last = collector.takeWindow(true);
