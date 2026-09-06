@@ -81,3 +81,9 @@ the connector still reads approximately 149,439 records/s with zero reported dro
 26.121% of the correlated states. The supersession is therefore client-side, after connector read and before the
 native subscription callback. Ordinary limits change callback shape but do not produce a monotonic coverage change;
 `STREAM_FEED` continues to deliver exactly 100%.
+
+The aggregation-period controls further separate delayed notification from supersession. FEED coverage falls to
+75.627% at 1 ms and 68.917% at 10 ms, while otherwise identical STREAM_FEED controls preserve exactly 100% at both
+periods. STREAM_FEED still produces fewer, larger callbacks and higher latency, proving that aggregation is active
+without discarding stream records. See the
+[`STREAM_FEED aggregation-period control`](20260906T093904Z/AGGREGATION-STREAM-CONTROL.md).

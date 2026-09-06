@@ -282,6 +282,21 @@ market-event subscription before symbols are added. Initial `Profile` events use
     --config ./tools/aggregation-period.conf
 ```
 
+After that A/B test, `tools/aggregation-stream-control.conf` repeats the `0`, `1ms`, and `10ms` aggregation periods
+with `STREAM_FEED`. It checks whether non-zero aggregation changes only notification batching and latency while the
+non-conflating delivery contract still preserves every recurring event. The suite performs three repetitions and
+takes approximately 15 minutes:
+
+```powershell
+.\build\Release\latency_runner.exe --binary-directory .\build\Release `
+    --config .\tools\aggregation-stream-control.conf
+```
+
+```sh
+./build/latency_runner --binary-directory ./build \
+    --config ./tools/aggregation-stream-control.conf
+```
+
 Each output prefix includes its repetition, for example `150k-100ms-r02`. The analyzer additionally writes
 `latency-runs.csv`, `latency-comparison.csv`, `monitoring-comparison.csv`, and a concise `REPORT.md`. Comparison CSVs
 contain the minimum, median, and maximum of run-level values; original summaries and logs remain available for more
