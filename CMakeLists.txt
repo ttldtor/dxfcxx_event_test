@@ -65,6 +65,9 @@ target_link_libraries(latency_server PRIVATE latency_core dxfcxx::static)
 add_executable(latency_client src/client.cpp)
 target_link_libraries(latency_client PRIVATE latency_core dxfcxx::static)
 
+add_executable(latency_graal_delivery_client src/graal_delivery_client.cpp)
+target_link_libraries(latency_graal_delivery_client PRIVATE latency_core dxfcxx::static)
+
 add_executable(latency_analyzer src/analyzer.cpp)
 target_link_libraries(latency_analyzer PRIVATE latency_core)
 
@@ -83,7 +86,7 @@ if(LATENCY_BUILD_LEGACY_CLIENT)
             $<TARGET_FILE:dxfeed-c-api::dxfeed-c-api> $<TARGET_FILE_DIR:latency_legacy_client>)
 endif()
 
-foreach(target latency_server latency_client)
+foreach(target latency_server latency_client latency_graal_delivery_client)
     add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:dxfcxx::graal> $<TARGET_FILE_DIR:${target}>)
     add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -91,16 +94,19 @@ foreach(target latency_server latency_client)
 endforeach()
 
 if(APPLE)
-    set_target_properties(latency_server latency_client PROPERTIES INSTALL_RPATH "@loader_path")
+    set_target_properties(latency_server latency_client latency_graal_delivery_client PROPERTIES INSTALL_RPATH
+                                                                                         "@loader_path")
 elseif(UNIX)
-    set_target_properties(latency_server latency_client PROPERTIES INSTALL_RPATH "$ORIGIN")
+    set_target_properties(latency_server latency_client latency_graal_delivery_client PROPERTIES INSTALL_RPATH
+                                                                                         "$ORIGIN")
 endif()
 
 if(LATENCY_BUILD_LEGACY_CLIENT AND UNIX)
     set_target_properties(latency_legacy_client PROPERTIES INSTALL_RPATH "$ORIGIN")
 endif()
 
-install(TARGETS latency_server latency_client latency_analyzer latency_runner RUNTIME DESTINATION bin)
+install(TARGETS latency_server latency_client latency_graal_delivery_client latency_analyzer latency_runner
+        RUNTIME DESTINATION bin)
 install(FILES $<TARGET_FILE:dxfcxx::graal> DESTINATION bin)
 install(FILES dxfeed.system.properties DESTINATION bin)
 
@@ -133,6 +139,7 @@ if(BUILD_TESTING)
     add_test(NAME latency_tests COMMAND latency_tests)
     add_test(NAME latency_analyzer_help COMMAND latency_analyzer --help)
     add_test(NAME latency_runner_help COMMAND latency_runner --help)
+    add_test(NAME latency_graal_delivery_client_help COMMAND latency_graal_delivery_client --help)
 
     if(LATENCY_BUILD_LEGACY_CLIENT)
         add_test(NAME latency_legacy_client_help COMMAND latency_legacy_client --help)

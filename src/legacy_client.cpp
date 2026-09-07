@@ -494,9 +494,9 @@ void writeDelivery(const Config &config, const latency::TaskPattern &pattern, co
               "\"nominal_events_per_second\",\"callbacks\",\"recurring_events\",\"quote\",\"trade\","
               "\"trade_eth\",\"summary\",\"profiles\",\"maximum_data_count\","
               "\"actual_events_per_second\",\"cpu_core_percent\",\"cpu_host_percent\","
-              "\"rss_mean_bytes\",\"rss_maximum_bytes\",\"resource_samples\",\"contract\"\n";
+              "\"rss_mean_bytes\",\"rss_maximum_bytes\",\"resource_samples\",\"implementation\",\"contract\"\n";
     output << std::format(
-        "\"{}\",\"{}\",\"event\",{},{:.3f},{},{},{},{},{},{},{},{},{:.3f},{:.3f},{:.3f},{},{},{},\"{}\"\n",
+        "\"{}\",\"{}\",\"event\",{},{:.3f},{},{},{},{},{},{},{},{},{:.3f},{:.3f},{:.3f},{},{},{},\"legacy\",\"{}\"\n",
         formatUtc(start), formatUtc(end), pattern.eventCount(), pattern.nominalEventsPerSecond(), measured.callbacks,
         measured.recurringEvents, measured.quotes, measured.trades, measured.tradeEths, measured.summaries,
         measured.profiles, maximumBatch, elapsed > 0 ? measured.recurringEvents / elapsed : 0.0,

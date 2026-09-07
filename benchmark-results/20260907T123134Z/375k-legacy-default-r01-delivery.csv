@@ -1,0 +1,2 @@
+"window_start_utc","window_end_utc","sample_kind","expected_per_batch","nominal_events_per_second","callbacks","recurring_events","quote","trade","trade_eth","summary","profiles","maximum_data_count","actual_events_per_second","cpu_core_percent","cpu_host_percent","rss_mean_bytes","rss_maximum_bytes","resource_samples","implementation","contract"
+"2026-09-07T12:37:14.850Z","2026-09-07T12:37:44.859Z","event",1500,375000.000,11067772,11067772,2766750,2767125,2767125,2766772,0,1,368825.656,24.837,0.776,7610027,7643136,481,"legacy","default"

@@ -26,6 +26,7 @@ namespace latency {
 namespace {
 constexpr std::string_view SUMMARY_SUFFIX = "-summary.csv";
 constexpr std::string_view DELIVERY_SUFFIX = "-delivery.csv";
+constexpr std::string_view CLIENT_LOG_SUFFIX = "-client.log";
 constexpr std::string_view TIME_SERIES_SUFFIX = "-time-series.csv";
 constexpr std::string_view SNAPSHOT_OVERLAP_SUFFIX = "-snapshot-overlap.csv";
 constexpr std::string_view NUMBER_PATTERN = R"([-+]?[0-9][0-9,]*(?:\.[0-9]+)?)";
@@ -82,7 +83,7 @@ struct LatencyRunRow {
     bool integrityOk{};
 };
 
-/** Contains one whole-run callback-delivery row emitted by the legacy C API client. */
+/** Contains one whole-run callback-delivery row emitted by a delivery-only client. */
 struct DeliveryRunRow {
     std::string profile;
     BenchmarkProfile identity;
@@ -101,7 +102,21 @@ struct DeliveryRunRow {
     double rssMeanBytes{std::numeric_limits<double>::quiet_NaN()};
     double rssMaximumBytes{std::numeric_limits<double>::quiet_NaN()};
     double resourceSamples{std::numeric_limits<double>::quiet_NaN()};
+    std::string implementation{"legacy"};
     std::string contract;
+};
+
+/** Contains process CPU and resident-memory measurements emitted by one benchmark client. */
+struct ClientResourceRunRow {
+    std::string profile;
+    BenchmarkProfile identity;
+    std::string clientWorkload;
+    double nominalEventsPerSecond{};
+    double cpuCorePercent{};
+    double cpuHostPercent{};
+    double rssMeanBytes{};
+    double rssMaximumBytes{};
+    double samples{};
 };
 
 /** Contains one TimeAndSale HISTORY snapshot and live-cutover result. */
@@ -794,7 +809,7 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
     return rows;
 }
 
-/** Reads the whole-run delivery counters produced by one legacy C API client execution. */
+/** Reads the whole-run delivery counters produced by one delivery-only client execution. */
 std::expected<DeliveryRunRow, std::string> readDelivery(const std::filesystem::path &path, const std::string &profile) {
     std::ifstream input{path};
 
@@ -865,6 +880,15 @@ std::expected<DeliveryRunRow, std::string> readDelivery(const std::filesystem::p
     const auto rssMeanBytes = optionalNumber("rss_mean_bytes");
     const auto rssMaximumBytes = optionalNumber("rss_maximum_bytes");
     const auto resourceSamples = optionalNumber("resource_samples");
+    const auto implementationFound = std::ranges::find(headings, "implementation");
+    const auto implementationIndex = static_cast<std::size_t>(implementationFound - headings.begin());
+
+    if (implementationFound != headings.end() && implementationIndex >= values.size()) {
+        return std::unexpected(std::format("delivery result has no implementation value: {}", path.string()));
+    }
+
+    const auto implementation =
+        implementationFound == headings.end() ? std::string{"legacy"} : values[implementationIndex];
     const auto contractIndex = indexOf("contract");
 
     for (const auto *value :
@@ -879,15 +903,63 @@ std::expected<DeliveryRunRow, std::string> readDelivery(const std::filesystem::p
         return std::unexpected(contractIndex.error());
     }
 
-    return DeliveryRunRow{profile,           parseBenchmarkProfile(profile),
-                          *nominal,          *callbacks,
-                          *recurring,        *quotes,
-                          *trades,           *tradeEths,
-                          *summaries,        *profiles,
-                          *maximumDataCount, *actualRate,
-                          *cpuCorePercent,   *cpuHostPercent,
-                          *rssMeanBytes,     *rssMaximumBytes,
-                          *resourceSamples,  values[*contractIndex]};
+    return DeliveryRunRow{profile,
+                          parseBenchmarkProfile(profile),
+                          *nominal,
+                          *callbacks,
+                          *recurring,
+                          *quotes,
+                          *trades,
+                          *tradeEths,
+                          *summaries,
+                          *profiles,
+                          *maximumDataCount,
+                          *actualRate,
+                          *cpuCorePercent,
+                          *cpuHostPercent,
+                          *rssMeanBytes,
+                          *rssMaximumBytes,
+                          *resourceSamples,
+                          implementation,
+                          values[*contractIndex]};
+}
+
+/** Reads optional process resource statistics from one benchmark client log. */
+std::expected<std::optional<ClientResourceRunRow>, std::string> readClientResources(const std::filesystem::path &path,
+                                                                                    const std::string &profile) {
+    std::ifstream input{path};
+
+    if (!input) {
+        return std::unexpected(std::format("cannot read client log: {}", path.string()));
+    }
+
+    const std::string contents{std::istreambuf_iterator<char>{input}, {}};
+    const std::regex resourcePattern{
+        R"((Client resources|Graal delivery resources|Legacy resources): cpu-core=([-+]?[0-9]+(?:\.[0-9]+)?)% cpu-host=([-+]?[0-9]+(?:\.[0-9]+)?)% rss-mean=([-+]?[0-9]+(?:\.[0-9]+)?) MiB rss-maximum=([-+]?[0-9]+(?:\.[0-9]+)?) MiB samples=([0-9]+))"};
+    std::smatch match;
+
+    if (!std::regex_search(contents, match, resourcePattern)) {
+        return std::nullopt;
+    }
+
+    std::array<std::expected<double, std::string>, 5> values{parseNumber(match[2].str()), parseNumber(match[3].str()),
+                                                             parseNumber(match[4].str()), parseNumber(match[5].str()),
+                                                             parseNumber(match[6].str())};
+
+    for (const auto &value : values) {
+        if (!value) {
+            return std::unexpected(
+                std::format("invalid client resource statistics in {}: {}", path.string(), value.error()));
+        }
+    }
+
+    const auto clientWorkload = match[1].str() == "Client resources"           ? std::string{"graal/full"}
+                                : match[1].str() == "Graal delivery resources" ? std::string{"graal/delivery-only"}
+                                                                               : std::string{"legacy/delivery-only"};
+
+    return ClientResourceRunRow{
+        profile,    parseBenchmarkProfile(profile), clientWorkload,           0,         *values[0],
+        *values[1], *values[2] * 1'048'576.0,       *values[3] * 1'048'576.0, *values[4]};
 }
 
 /** Reads the TimeAndSale snapshot and live-cutover counters produced by one client execution. */
@@ -1357,6 +1429,7 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
                                                           const MonitoringAnalysis &analysis) {
     std::vector<LatencyRunRow> latencyRows;
     std::vector<DeliveryRunRow> deliveryRows;
+    std::vector<ClientResourceRunRow> clientResourceRows;
     std::vector<TimeSeriesRunRow> timeSeriesRows;
     std::vector<SnapshotOverlapRunRow> snapshotOverlapRows;
 
@@ -1423,10 +1496,45 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
         }
     }
 
+    for (const auto &entry : std::filesystem::directory_iterator{runDirectory}) {
+        const auto filename = entry.path().filename().string();
+
+        if (!entry.is_regular_file() || !filename.ends_with(CLIENT_LOG_SUFFIX)) {
+            continue;
+        }
+
+        const auto profile = filename.substr(0, filename.size() - CLIENT_LOG_SUFFIX.size());
+        auto row = readClientResources(entry.path(), profile);
+
+        if (!row) {
+            return std::unexpected(row.error());
+        }
+
+        if (!*row) {
+            continue;
+        }
+
+        const auto delivery = std::ranges::find(deliveryRows, profile, &DeliveryRunRow::profile);
+        const auto latency = std::ranges::find_if(latencyRows, [&](const LatencyRunRow &candidate) {
+            return candidate.profile == profile && candidate.nominalEventsPerSecond > 0;
+        });
+
+        if (delivery != deliveryRows.end()) {
+            (*row)->nominalEventsPerSecond = delivery->nominalEventsPerSecond;
+        } else if (latency != latencyRows.end()) {
+            (*row)->nominalEventsPerSecond = latency->nominalEventsPerSecond;
+        }
+
+        clientResourceRows.push_back(std::move(**row));
+    }
+
     std::ranges::sort(latencyRows, {}, [](const LatencyRunRow &row) {
         return std::tuple{row.nominalEventsPerSecond, row.identity.scenario, row.identity.repetition, row.sampleKind};
     });
     std::ranges::sort(deliveryRows, {}, [](const DeliveryRunRow &row) {
+        return std::tuple{row.nominalEventsPerSecond, row.identity.scenario, row.identity.repetition};
+    });
+    std::ranges::sort(clientResourceRows, {}, [](const ClientResourceRunRow &row) {
         return std::tuple{row.nominalEventsPerSecond, row.identity.scenario, row.identity.repetition};
     });
     std::ranges::sort(timeSeriesRows, {}, [](const TimeSeriesRunRow &row) {
@@ -1446,7 +1554,7 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
                     "\"recurring_events\",\"quote\",\"trade\",\"trade_eth\",\"summary\",\"profiles\","
                     "\"maximum_data_count\",\"actual_events_per_second\",\"cpu_core_percent\","
                     "\"cpu_host_percent\",\"rss_mean_bytes\",\"rss_maximum_bytes\",\"resource_samples\","
-                    "\"contract\"\n";
+                    "\"implementation\",\"contract\"\n";
 
     for (const auto &row : deliveryRows) {
         writeColumn(deliveryRuns, row.profile, true);
@@ -1467,6 +1575,7 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
         writeColumn(deliveryRuns, row.rssMeanBytes);
         writeColumn(deliveryRuns, row.rssMaximumBytes);
         writeColumn(deliveryRuns, row.resourceSamples);
+        writeColumn(deliveryRuns, row.implementation);
         writeColumn(deliveryRuns, row.contract);
         deliveryRuns << '\n';
     }
@@ -1505,7 +1614,64 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
                 continue;
             }
 
-            writeComparisonRow(deliveryComparison, {scenario, "legacy-delivery", name, compareRuns(std::move(values))});
+            writeComparisonRow(deliveryComparison, {scenario, std::format("{}-delivery", rows.front()->implementation),
+                                                    name, compareRuns(std::move(values))});
+        }
+    }
+
+    std::ofstream clientResourceRuns;
+
+    if (auto opened = openOutput(clientResourceRuns, runDirectory / "client-resource-runs.csv"); !opened) {
+        return opened;
+    }
+
+    clientResourceRuns << "\"profile\",\"scenario\",\"repetition\",\"client_workload\","
+                          "\"nominal_events_per_second\",\"cpu_core_percent\",\"cpu_host_percent\","
+                          "\"rss_mean_bytes\",\"rss_maximum_bytes\",\"samples\"\n";
+
+    for (const auto &row : clientResourceRows) {
+        writeColumn(clientResourceRuns, row.profile, true);
+        writeColumn(clientResourceRuns, row.identity.scenario);
+        writeColumn(clientResourceRuns, static_cast<double>(row.identity.repetition));
+        writeColumn(clientResourceRuns, row.clientWorkload);
+        writeColumn(clientResourceRuns, row.nominalEventsPerSecond);
+        writeColumn(clientResourceRuns, row.cpuCorePercent);
+        writeColumn(clientResourceRuns, row.cpuHostPercent);
+        writeColumn(clientResourceRuns, row.rssMeanBytes);
+        writeColumn(clientResourceRuns, row.rssMaximumBytes);
+        writeColumn(clientResourceRuns, row.samples);
+        clientResourceRuns << '\n';
+    }
+
+    std::map<std::string, std::vector<const ClientResourceRunRow *>> clientResourceScenarios;
+
+    for (const auto &row : clientResourceRows) {
+        clientResourceScenarios[row.identity.scenario].push_back(&row);
+    }
+
+    std::ofstream clientResourceComparison;
+
+    if (auto opened = openOutput(clientResourceComparison, runDirectory / "client-resource-comparison.csv"); !opened) {
+        return opened;
+    }
+
+    writeComparisonHeader(clientResourceComparison);
+
+    for (const auto &[scenario, rows] : clientResourceScenarios) {
+        for (const auto [name, member] : {
+                 std::pair{"cpu_core_percent", &ClientResourceRunRow::cpuCorePercent},
+                 std::pair{"cpu_host_percent", &ClientResourceRunRow::cpuHostPercent},
+                 std::pair{"rss_mean_bytes", &ClientResourceRunRow::rssMeanBytes},
+                 std::pair{"rss_maximum_bytes", &ClientResourceRunRow::rssMaximumBytes},
+             }) {
+            std::vector<double> values;
+
+            for (const auto *row : rows) {
+                values.push_back(row->*member);
+            }
+
+            writeComparisonRow(clientResourceComparison,
+                               {scenario, rows.front()->clientWorkload, name, compareRuns(std::move(values))});
         }
     }
 
@@ -1830,13 +1996,13 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
     writeExperimentDefinition(report, *experiment);
 
     if (!deliveryScenarios.empty()) {
-        report << R"(## Legacy C API delivery
+        report << R"(## Delivery-only client results
 
-The legacy C API has no benchmark marker event, so these values describe callback delivery and callback shape; they
-are not timestamp-based E2E latency measurements. Rates are medians across repetitions.
+These values describe callback delivery and callback shape without timestamp correlation or per-event sample
+allocation. They are not timestamp-based E2E latency measurements. Rates are medians across repetitions.
 
-| Scenario | Contract | Runs | Nominal events/s | Observed events/s median (range) | Callbacks median | Maximum `data_count` | CPU, one-core basis | CPU, host basis | RSS mean / maximum |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Scenario | Client | Contract / role | Runs | Nominal events/s | Observed events/s median (range) | Callbacks median | Maximum callback batch | CPU, one-core basis | CPU, host basis | RSS mean / maximum |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
 )";
 
         for (const auto &[scenario, rows] : deliveryScenarios) {
@@ -1873,11 +2039,11 @@ are not timestamp-based E2E latency measurements. Rates are medians across repet
                 return value.runs ? std::format("{:.3f}{}", value.median / divisor, suffix) : std::string{"n/a"};
             };
             report << std::format(
-                "| {} | {} | {} | {:.3f} | {:.3f} ({:.3f}–{:.3f}) | {:.3f} | {:.0f} | {} | {} | {} / {} |\n", scenario,
-                representative->contract, rate.runs, representative->nominalEventsPerSecond, rate.median, rate.minimum,
-                rate.maximum, callback.median, maximumDataCount.maximum, resourceText(cpuCore, 1.0, "%"),
-                resourceText(cpuHost, 1.0, "%"), resourceText(rssMean, 1'048'576.0, " MiB"),
-                resourceText(rssMaximum, 1'048'576.0, " MiB"));
+                "| {} | {} | {} | {} | {:.3f} | {:.3f} ({:.3f}–{:.3f}) | {:.3f} | {:.0f} | {} | {} | {} / {} |\n",
+                scenario, representative->implementation, representative->contract, rate.runs,
+                representative->nominalEventsPerSecond, rate.median, rate.minimum, rate.maximum, callback.median,
+                maximumDataCount.maximum, resourceText(cpuCore, 1.0, "%"), resourceText(cpuHost, 1.0, "%"),
+                resourceText(rssMean, 1'048'576.0, " MiB"), resourceText(rssMaximum, 1'048'576.0, " MiB"));
         }
 
         report << R"(
@@ -1885,7 +2051,52 @@ are not timestamp-based E2E latency measurements. Rates are medians across repet
 With the default legacy contract, the C API expands each base-symbol Quote, Trade, TradeETH, and Summary subscription
 into the composite plus 26 regional symbols. A task can publish a configured subset of those regional record keys
 while keeping its recurring event rate fixed. CPU uses both a one-core basis and a host-normalized basis; RSS is
-sampled by the cross-platform `ttldtor/Process` library during the measurement interval.)"
+sampled by the cross-platform `ttldtor/Process` library during the measurement interval. The Graal delivery-only
+client preserves native vector callback sizes and performs only the type inspection needed for per-type counters.)"
+               << "\n\n";
+    }
+
+    if (!clientResourceScenarios.empty()) {
+        report << R"(## Client process resources
+
+These measurements cover the complete client process during its measurement interval. Full Graal includes marker
+correlation, latency-sample retention, window statistics, and outlier reporting; delivery-only clients count callback
+delivery without retaining per-event latency samples. CPU is normalized both to one logical core and to the host.
+
+| Scenario | Client workload | Runs | Nominal events/s | CPU, one-core median (range) | CPU, host median | RSS mean median | RSS maximum median |
+|---|---|---:|---:|---:|---:|---:|---:|
+)";
+
+        for (const auto &[scenario, rows] : clientResourceScenarios) {
+            const auto collect = [&](double ClientResourceRunRow::*member) {
+                std::vector<double> values;
+
+                for (const auto *row : rows) {
+                    values.push_back(row->*member);
+                }
+
+                return compareRuns(std::move(values));
+            };
+            const auto cpuCore = collect(&ClientResourceRunRow::cpuCorePercent);
+            const auto cpuHost = collect(&ClientResourceRunRow::cpuHostPercent);
+            const auto rssMean = collect(&ClientResourceRunRow::rssMeanBytes);
+            const auto rssMaximum = collect(&ClientResourceRunRow::rssMaximumBytes);
+            const auto *representative = rows.front();
+
+            report << std::format("| {} | {} | {} | {:.3f} | {:.3f}% ({:.3f}–{:.3f}%) | {:.3f}% | {:.3f} MiB | "
+                                  "{:.3f} MiB |\n",
+                                  scenario, representative->clientWorkload, cpuCore.runs,
+                                  representative->nominalEventsPerSecond, cpuCore.median, cpuCore.minimum,
+                                  cpuCore.maximum, cpuHost.median, rssMean.median / 1'048'576.0,
+                                  rssMaximum.median / 1'048'576.0);
+        }
+
+        report << R"(
+
+RSS means are arithmetic means of periodic samples; maximum RSS is less sensitive to different sample counts. The
+full client calculates each window's distributions synchronously, so at high load that benchmark work can extend a
+nominal window while listener callbacks continue. Use QD read/write rates and exact STREAM_FEED integrity alongside
+these process measurements.)"
                << "\n\n";
     }
 
@@ -2084,8 +2295,9 @@ listener coverage. Because FEED does not preserve publication boundaries, listen
 are observations rather than integrity failures; STREAM_FEED still requires exact correlated delivery.
 )";
 
-    report << "\nGenerated files: `latency-runs.csv`, `latency-comparison.csv`, `time-series-runs.csv`, "
-              "`time-series-comparison.csv`, `snapshot-overlap-runs.csv`, `snapshot-overlap-comparison.csv`, "
+    report << "\nGenerated files: `latency-runs.csv`, `latency-comparison.csv`, `client-resource-runs.csv`, "
+              "`client-resource-comparison.csv`, `time-series-runs.csv`, `time-series-comparison.csv`, "
+              "`snapshot-overlap-runs.csv`, `snapshot-overlap-comparison.csv`, "
               "`delivery-runs.csv`, `delivery-comparison.csv`, `monitoring.csv`, `monitoring-summary.csv`, and "
               "`monitoring-comparison.csv`.\n\n"
               "## Client monitoring\n\n"

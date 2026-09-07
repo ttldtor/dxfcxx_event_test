@@ -283,12 +283,18 @@ PROFILE=example|SUB:Q1
     for (const auto repetition : {"r01", "r02", "r03"}) {
         const auto profile = std::format("example-{}", repetition);
         const auto legacyProfile = std::format("legacy-example-{}", repetition);
+        const auto graalDeliveryProfile = std::format("graal-delivery-example-{}", repetition);
         std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-summary.csv",
                                    repeatedFixture.path() / std::format("{}-summary.csv", profile));
         std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-server.log",
                                    repeatedFixture.path() / std::format("{}-server.log", profile));
         std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-client.log",
                                    repeatedFixture.path() / std::format("{}-client.log", profile));
+        {
+            std::ofstream clientLog{repeatedFixture.path() / std::format("{}-client.log", profile), std::ios::app};
+            clientLog << "Client resources: cpu-core=40.000% cpu-host=4.000% rss-mean=120.000 MiB "
+                         "rss-maximum=150.000 MiB samples=20\n";
+        }
         std::ofstream timeSeries{repeatedFixture.path() / std::format("{}-time-series.csv", profile)};
         timeSeries
             << R"(from_time_ms,requested_symbols,observed_symbols,completed_symbols,snapshot_events,snapshot_callbacks,snapshot_begin,snapshot_end,snapshot_snip,snapshot_remove,duplicate_indices,premature_live_events,live_events,clock_anomalies,first_event_delay_ms,snapshot_duration_ms,first_live_relative_to_global_completion_ms,live_latency_samples,live_latency_mean_us,live_latency_p50_us,live_latency_p90_us,live_latency_p99_us,live_latency_p999_us,live_latency_max_us,cpu_core_percent,cpu_host_percent,rss_mean_bytes,rss_maximum_bytes,resource_samples
@@ -305,10 +311,31 @@ after,2026-01-02T00:00:01.100Z,2026-01-02T00:00:02.000Z,900,event,90,90,90,0,1,0
                                    repeatedFixture.path() / std::format("{}-server.log", legacyProfile));
         std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-client.log",
                                    repeatedFixture.path() / std::format("{}-client.log", legacyProfile));
+        {
+            std::ofstream clientLog{repeatedFixture.path() / std::format("{}-client.log", legacyProfile),
+                                    std::ios::app};
+            clientLog << "Legacy resources: cpu-core=25.000% cpu-host=2.500% rss-mean=100.000 MiB "
+                         "rss-maximum=120.000 MiB samples=120\n";
+        }
         std::ofstream delivery{repeatedFixture.path() / std::format("{}-delivery.csv", legacyProfile)};
         delivery
             << R"("window_start_utc","window_end_utc","sample_kind","expected_per_batch","nominal_events_per_second","callbacks","recurring_events","quote","trade","trade_eth","summary","profiles","maximum_data_count","actual_events_per_second","cpu_core_percent","cpu_host_percent","rss_mean_bytes","rss_maximum_bytes","resource_samples","contract"
 "2026-01-02T00:00:00.000Z","2026-01-02T23:59:00.000Z","event",4,400,1200,1200,300,300,300,300,0,1,400,25,2.5,104857600,125829120,120,"default"
+)";
+        std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-server.log",
+                                   repeatedFixture.path() / std::format("{}-server.log", graalDeliveryProfile));
+        std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-client.log",
+                                   repeatedFixture.path() / std::format("{}-client.log", graalDeliveryProfile));
+        {
+            std::ofstream clientLog{repeatedFixture.path() / std::format("{}-client.log", graalDeliveryProfile),
+                                    std::ios::app};
+            clientLog << "Graal delivery resources: cpu-core=20.000% cpu-host=2.000% rss-mean=90.000 MiB "
+                         "rss-maximum=100.000 MiB samples=120\n";
+        }
+        std::ofstream graalDelivery{repeatedFixture.path() / std::format("{}-delivery.csv", graalDeliveryProfile)};
+        graalDelivery
+            << R"("window_start_utc","window_end_utc","sample_kind","expected_per_batch","nominal_events_per_second","callbacks","recurring_events","quote","trade","trade_eth","summary","profiles","maximum_data_count","actual_events_per_second","cpu_core_percent","cpu_host_percent","rss_mean_bytes","rss_maximum_bytes","resource_samples","implementation","contract"
+"2026-01-02T00:00:00.000Z","2026-01-02T23:59:00.000Z","event",4,400,30,1200,300,300,300,300,0,40,400,20,2,94371840,104857600,120,"graal","stream-feed"
 )";
     }
 
@@ -319,6 +346,8 @@ after,2026-01-02T00:00:01.100Z,2026-01-02T00:00:02.000Z,900,event,90,90,90,0,1,0
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "latency-runs.csv") > 0);
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "delivery-runs.csv") > 0);
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "delivery-comparison.csv") > 0);
+    CHECK(std::filesystem::file_size(repeatedFixture.path() / "client-resource-runs.csv") > 0);
+    CHECK(std::filesystem::file_size(repeatedFixture.path() / "client-resource-comparison.csv") > 0);
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "time-series-runs.csv") > 0);
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "time-series-comparison.csv") > 0);
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "snapshot-overlap-runs.csv") > 0);
@@ -330,6 +359,13 @@ after,2026-01-02T00:00:01.100Z,2026-01-02T00:00:02.000Z,900,event,90,90,90,0,1,0
 
     CHECK(latencyRunsText.contains("\"listener_deficit\",\"listener_coverage\""));
     CHECK_FALSE(latencyRunsText.contains("\"not_delivered\""));
+
+    std::ifstream deliveryRuns{repeatedFixture.path() / "delivery-runs.csv"};
+    const std::string deliveryRunsText{std::istreambuf_iterator<char>{deliveryRuns}, {}};
+
+    CHECK(deliveryRunsText.contains("\"implementation\",\"contract\""));
+    CHECK(deliveryRunsText.contains("graal-delivery-example"));
+    CHECK(deliveryRunsText.contains("\"graal\",\"stream-feed\""));
 
     std::ifstream report{repeatedFixture.path() / "REPORT.md"};
     const std::string reportText{std::istreambuf_iterator<char>{report}, {}};
@@ -343,12 +379,17 @@ after,2026-01-02T00:00:01.100Z,2026-01-02T00:00:02.000Z,900,event,90,90,90,0,1,0
         "**Evaluation criteria:** Compare listener coverage, latency, QD drops, and resource use."));
     CHECK(reportText.contains("**Limitations:** Does not represent a production network."));
     CHECK(reportText.contains("## Results"));
-    CHECK(reportText.contains("## Legacy C API delivery"));
+    CHECK(reportText.contains("## Delivery-only client results"));
+    CHECK(reportText.contains("## Client process resources"));
+    CHECK(reportText.contains("| example | graal/full | 3 | 3000.000 | 40.000% (40.000–40.000%)"));
+    CHECK(reportText.contains("| graal-delivery-example | graal/delivery-only | 3 | 400.000"));
+    CHECK(reportText.contains("| legacy-example | legacy/delivery-only | 3 | 400.000"));
     CHECK(reportText.contains("## TimeAndSale snapshot and live cutover"));
     CHECK(reportText.contains("## Ticker latency around TimeAndSale snapshot delivery"));
     CHECK(reportText.contains("| example | during | 3 | 100.000 ms | 100.000%"));
     CHECK(reportText.contains("| example | 3 | retained | 1 | 200 (200–200)"));
-    CHECK(reportText.contains("| legacy-example | default | 3 | 400.000 | 400.000"));
+    CHECK(reportText.contains("| legacy-example | legacy | default | 3 | 400.000 | 400.000"));
+    CHECK(reportText.contains("| graal-delivery-example | graal | stream-feed | 3 | 400.000 | 400.000"));
     CHECK(reportText.contains("| example | stream-feed | unknown | 0.000 ms | 3 |"));
     CHECK(reportText.contains("Listener coverage median"));
     CHECK(reportText.contains("Listener deficit median"));
@@ -618,7 +659,7 @@ PROFILE=time-series|SUB:Q1;N1||||legacy
     const auto invalidImplementation = parseBenchmarkSuite(legacyTimeSeries);
 
     REQUIRE_FALSE(invalidImplementation.has_value());
-    CHECK(invalidImplementation.error().contains("not supported by the legacy client"));
+    CHECK(invalidImplementation.error().contains("requires the marker-correlating Graal client"));
 
     std::istringstream invalidProfileHistory{R"(REPETITIONS=1
 WARMUP=1s

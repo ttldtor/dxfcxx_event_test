@@ -108,7 +108,7 @@ bool validRole(std::string_view role) {
 
 /// Checks whether a client implementation is supported by the benchmark.
 bool validClientImplementation(std::string_view implementation) {
-    return implementation == "graal" || implementation == "legacy";
+    return implementation == "graal" || implementation == "graal-delivery" || implementation == "legacy";
 }
 
 /// Escapes one field for RFC 4180-compatible CSV output.
@@ -859,9 +859,9 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
                     std::format("TimeAndSale profile {} requires the feed client role", profile.name)};
             }
 
-            if (implementation == "legacy") {
+            if (implementation != "graal") {
                 return std::unexpected{
-                    std::format("TimeAndSale profile {} is not supported by the legacy client", profile.name)};
+                    std::format("TimeAndSale profile {} requires the marker-correlating Graal client", profile.name)};
             }
 
             if (suite.timeSeriesUnsubscribeAfterSnapshot && !profile.timeSeriesSubscribeAfter &&
@@ -944,6 +944,7 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
     const auto plan = buildBenchmarkPlan(suite, overrides);
     const auto server = binaryDirectory / executableName("latency_server");
     const auto client = binaryDirectory / executableName("latency_client");
+    const auto graalDeliveryClient = binaryDirectory / executableName("latency_graal_delivery_client");
     const auto legacyClient = binaryDirectory / executableName("latency_legacy_client");
     const auto analyzer = binaryDirectory / executableName("latency_analyzer");
 
@@ -961,6 +962,9 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
     const auto needsLegacyClient = std::ranges::any_of(plan, [](const BenchmarkRun &run) {
         return run.clientImplementation == "legacy";
     });
+    const auto needsGraalDeliveryClient = std::ranges::any_of(plan, [](const BenchmarkRun &run) {
+        return run.clientImplementation == "graal-delivery";
+    });
 
     if (needsGraalClient && !std::filesystem::exists(client)) {
         std::cerr << "Missing benchmark binary: " << client << '\n';
@@ -971,6 +975,12 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
     if (needsLegacyClient && !std::filesystem::exists(legacyClient)) {
         std::cerr << "Missing benchmark binary: " << legacyClient
                   << " (configure with LATENCY_BUILD_LEGACY_CLIENT=ON)\n";
+
+        return 2;
+    }
+
+    if (needsGraalDeliveryClient && !std::filesystem::exists(graalDeliveryClient)) {
+        std::cerr << "Missing benchmark binary: " << graalDeliveryClient << '\n';
 
         return 2;
     }
@@ -1079,7 +1089,7 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
                                                  "--time-series-history",
                                                  std::to_string(run.timeSeriesHistoryLimit)};
 
-        if (run.clientImplementation == "legacy") {
+        if (run.clientImplementation != "graal") {
             serverArguments.insert(serverArguments.end(), {"--task", run.task});
         }
 
@@ -1099,6 +1109,30 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
                                           {"--address", suite.address, "--task", run.task, "--warmup", suite.warmup,
                                            "--duration", suite.duration, "--startup-timeout", suite.startupTimeout,
                                            "--output", prefix.string(), "--contract", "default", "--require-events"},
+                                          clientLog);
+            } else if (run.clientImplementation == "graal-delivery") {
+                clientResult = runAndWait(graalDeliveryClient,
+                                          {"--address",
+                                           suite.address,
+                                           "--task",
+                                           run.task,
+                                           "--role",
+                                           run.clientRole,
+                                           "--events-batch-limit",
+                                           run.eventsBatchLimit,
+                                           "--aggregation-period",
+                                           run.aggregationPeriod,
+                                           "--monitoring-stat",
+                                           suite.monitoringPeriod,
+                                           "--warmup",
+                                           suite.warmup,
+                                           "--duration",
+                                           suite.duration,
+                                           "--startup-timeout",
+                                           suite.startupTimeout,
+                                           "--output",
+                                           prefix.string(),
+                                           "--require-events"},
                                           clientLog);
             } else {
                 std::vector<std::string> clientArguments{"--address",
@@ -1144,7 +1178,7 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
 
             clientExit = clientResult.value_or(-1);
             auto resultFile = prefix;
-            resultFile += run.clientImplementation == "legacy" ? "-delivery.csv" : "-summary.csv";
+            resultFile += run.clientImplementation == "graal" ? "-summary.csv" : "-delivery.csv";
 
             if (clientResult && clientExit == 0 && std::filesystem::exists(resultFile)) {
                 if (run.clientImplementation == "graal") {

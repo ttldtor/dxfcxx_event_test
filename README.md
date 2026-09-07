@@ -165,9 +165,26 @@ latency summaries and captured QD logs, then writes `monitoring.csv` and `monito
 `--run-directory` and the same `--monitoring-period` that was used by server and client. Durations accepted by all
 tools use `ms`, `s`, `m`, or `h` suffixes.
 
-### Legacy C API delivery client
+### Delivery-only API clients
 
-Set `LATENCY_BUILD_LEGACY_CLIENT=ON` to build the separate `latency_legacy_client` executable. CMake downloads the
+`latency_graal_delivery_client` provides a low-overhead C++ API path for comparisons where timestamp-correlated E2E
+samples are not required. It keeps one combined Q/T/E/S market subscription plus a separate Profile subscription,
+counts native vector callback sizes and event types, and records CPU/RSS. It intentionally omits `TextMessage`
+markers, per-event timestamps, pending-batch maps, latency samples, windows, and outlier calculation. Use
+`--role stream-feed` for non-conflating delivery or `--role feed` to retain normal ticker supersession semantics.
+
+The server must receive the same task directly because this client does not open the control subscription:
+
+```powershell
+.\build\Release\latency_server.exe --address :7400 --task "SUB:Q10;T10;E10;S10@100ms"
+.\build\Release\latency_graal_delivery_client.exe --address 127.0.0.1:7400 `
+    --task "SUB:Q10;T10;E10;S10@100ms" --role stream-feed --duration 10s --require-events
+```
+
+The delivery-only client is a measurement control, not a replacement for `latency_client`: it reports delivery rate,
+callback shape, and resources but cannot report publisher-to-listener latency.
+
+Set `LATENCY_BUILD_LEGACY_CLIENT=ON` to additionally build the legacy comparison path. CMake downloads the
 official pinned dxFeed C API 5.11.0 no-TLS binary SDK and exposes it through an imported target; it does not embed the
 upstream source project or manually copy its source lists. This optional target is supported only on 64-bit Windows
 and Linux. It is kept in a separate process so the legacy native library and the Graal Native SDK are never loaded
@@ -217,8 +234,9 @@ flowchart LR
 
 `latency_runner` can select the client and TimeAndSale setup per profile using optional fields:
 `PROFILE=name|task|client-role|events-batch-limit|aggregation-period|client-implementation|time-series-prefill|time-series-history|time-series-subscribe-after`.
-The implementation is `graal` by default, preserving existing suite files; use `legacy` only in builds configured with
-`LATENCY_BUILD_LEGACY_CLIENT=ON`. Legacy runs write `<prefix>-delivery.csv`, and the analyzer produces separate
+The implementation is `graal` by default, preserving existing suite files; select `graal-delivery` for the minimal
+C++ listener or `legacy` only in builds configured with `LATENCY_BUILD_LEGACY_CLIENT=ON`. Both delivery-only paths
+write `<prefix>-delivery.csv`, and the analyzer produces separate
 `delivery-runs.csv` and `delivery-comparison.csv` files instead of presenting delivery counters as latency.
 
 The ready-to-run `tools/legacy-api-comparison.conf` suite rotates three repetitions of the Graal CXX `STREAM_FEED`
@@ -235,6 +253,12 @@ listener deficit is not by itself overload because FEED may supersede intermedia
 `tools/api-capacity-confirmation.conf` repeats the selected 150,000 baseline, 375,000 pre-knee, and 500,000
 publisher-knee rates three times in rotating order. Its longer warm-up and measurement intervals test whether the
 discovery result is repeatable and whether either non-conflating client falls behind before the current publisher.
+
+`tools/api-delivery-overhead.conf` repeats those three rates with the full marker-correlating Graal client, the
+minimal Graal `STREAM_FEED` delivery-only client, and the default legacy delivery-only client. This isolates the CPU
+and RSS consumed by the benchmark's correlation, windowing, and latency-sample retention from work performed by the
+C++ API delivery path itself. The 500,000-events/s point remains a publisher-capacity observation rather than a clean
+client limit.
 
 `tools/regional-fanout.conf` compares zero, one, four, and twenty-six active regional sources for both clients while
 holding the aggregate recurring rate at 150,000 events/s. This separates record-key routing and subscription fan-out
@@ -502,10 +526,11 @@ aggregation. It performs three repetitions per stack and takes approximately sev
 ```
 
 Each output prefix includes its repetition, for example `150k-100ms-r02`. The analyzer additionally writes
-`latency-runs.csv`, `latency-comparison.csv`, `monitoring-comparison.csv`, `snapshot-overlap-runs.csv`,
-`snapshot-overlap-comparison.csv`, and a concise `REPORT.md`. The snapshot-overlap CSVs contain headers only when the
-suite did not enable delayed TimeAndSale subscription. Comparison CSVs contain the minimum, median, and maximum of
-run-level values; original summaries and logs remain available for more detailed analysis. A failed run is recorded
+`latency-runs.csv`, `latency-comparison.csv`, `client-resource-runs.csv`, `client-resource-comparison.csv`,
+`monitoring-comparison.csv`, `snapshot-overlap-runs.csv`, `snapshot-overlap-comparison.csv`, and a concise
+`REPORT.md`. The snapshot-overlap CSVs contain headers only when the suite did not enable delayed TimeAndSale
+subscription. Comparison CSVs contain the minimum, median, and maximum of run-level values; original summaries and
+logs remain available for more detailed analysis. A failed run is recorded
 in `run-manifest.csv`, its partial CSV files are preserved with a `.partial.csv` suffix, and the remaining profiles
 still run.
 
@@ -660,6 +685,9 @@ The first API delivery-capacity sweep and its interpretation are in
 The repeated baseline/pre-knee/publisher-knee confirmation is in
 [`benchmark-results/20260907T113447Z/REPORT.md`](benchmark-results/20260907T113447Z/REPORT.md) and
 [`benchmark-results/API-CAPACITY-CONFIRMATION.md`](benchmark-results/API-CAPACITY-CONFIRMATION.md).
+The full-versus-delivery-only resource comparison is in
+[`benchmark-results/20260907T123134Z/REPORT.md`](benchmark-results/20260907T123134Z/REPORT.md) and
+[`benchmark-results/API-DELIVERY-OVERHEAD.md`](benchmark-results/API-DELIVERY-OVERHEAD.md).
 
 The legacy C API does not implement the newer client-side FEED conflation mechanism, delivers events to its callback
 one at a time, and does not support `TextMessage`, which the Graal benchmark uses as the exact per-publication

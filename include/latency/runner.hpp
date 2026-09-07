@@ -50,7 +50,7 @@ struct BenchmarkSuiteProfile {
     /// Optional market-event notification aggregation-period override.
     std::optional<std::string> aggregationPeriod;
 
-    /// Optional client implementation: `graal` or `legacy`.
+    /// Optional client implementation: `graal`, `graal-delivery`, or `legacy`.
     std::optional<std::string> clientImplementation;
 
     /// Optional delay before the TimeAndSale time-series subscription is added.
@@ -167,7 +167,7 @@ struct BenchmarkRun {
     /// Effective market-event notification aggregation period.
     std::string aggregationPeriod;
 
-    /// Client executable family selected for this run: `graal` or `legacy`.
+    /// Client executable family selected for this run: `graal`, `graal-delivery`, or `legacy`.
     std::string clientImplementation;
 
     /// Effective delay before the TimeAndSale time-series subscription is added.
