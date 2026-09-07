@@ -226,6 +226,16 @@ and default legacy C API clients at the same shuffled 150,000 composite events/s
 delivery and callback shape. It does not claim that a callback-rate difference proves a transport regression or
 that the two APIs expose equivalent latency timestamps.
 
+`tools/api-capacity-discovery.conf` performs one short discovery run for the Graal CXX `STREAM_FEED`, Graal CXX
+`FEED`, and default legacy C API paths at 150,000, 250,000, 300,000, 375,000, and 500,000 recurring events/s. Every
+profile keeps 375 symbols and 1,500 events per publication; only the 10, 6, 5, 4, or 3 ms publication period changes.
+Use it to select the light, boundary, and overloaded rates for a subsequent repeated confirmation suite. A FEED
+listener deficit is not by itself overload because FEED may supersede intermediate ticker states by design.
+
+`tools/api-capacity-confirmation.conf` repeats the selected 150,000 baseline, 375,000 pre-knee, and 500,000
+publisher-knee rates three times in rotating order. Its longer warm-up and measurement intervals test whether the
+discovery result is repeatable and whether either non-conflating client falls behind before the current publisher.
+
 `tools/regional-fanout.conf` compares zero, one, four, and twenty-six active regional sources for both clients while
 holding the aggregate recurring rate at 150,000 events/s. This separates record-key routing and subscription fan-out
 from a simple increase in network throughput.
@@ -644,6 +654,12 @@ experiment and its interpretation are in
 The matched post-snapshot recovery control is in
 [`benchmark-results/20260907T104556Z/REPORT.md`](benchmark-results/20260907T104556Z/REPORT.md) and
 [`benchmark-results/TIME-SERIES-RECOVERY.md`](benchmark-results/TIME-SERIES-RECOVERY.md).
+The first API delivery-capacity sweep and its interpretation are in
+[`benchmark-results/20260907T111601Z/REPORT.md`](benchmark-results/20260907T111601Z/REPORT.md) and
+[`benchmark-results/API-CAPACITY-DISCOVERY.md`](benchmark-results/API-CAPACITY-DISCOVERY.md).
+The repeated baseline/pre-knee/publisher-knee confirmation is in
+[`benchmark-results/20260907T113447Z/REPORT.md`](benchmark-results/20260907T113447Z/REPORT.md) and
+[`benchmark-results/API-CAPACITY-CONFIRMATION.md`](benchmark-results/API-CAPACITY-CONFIRMATION.md).
 
 The legacy C API does not implement the newer client-side FEED conflation mechanism, delivers events to its callback
 one at a time, and does not support `TextMessage`, which the Graal benchmark uses as the exact per-publication
