@@ -271,6 +271,12 @@ three rates. Invoke it from separately configured v5.0.0, v7.0.0, and v8.0.0 bui
 stacks without marker correlation or retained latency samples. Each run directory records the selected CXX API,
 Native SDK, and QD versions in `environment.txt`; do not combine rows until those identities have been verified.
 
+`tools/inactive-subscription-cardinality.conf` holds recurring publication at 150,000 events/s on the first 375 base
+symbols while increasing the subscribed universe and initial Profile state from 375 to 3,750 and 10,000 symbols. It
+compares the minimal Graal `STREAM_FEED` client with legacy C API default delivery, including process CPU/RSS and QD
+subscription/storage counters. The suite sets `ACTIVE_SYMBOLS=375`; without that server setting, `#N` remains a
+rotating publication universe rather than a set of inactive subscriptions.
+
 `tools/regional-fanout.conf` compares zero, one, four, and twenty-six active regional sources for both clients while
 holding the aggregate recurring rate at 150,000 events/s. This separates record-key routing and subscription fan-out
 from a simple increase in network throughput.
@@ -427,7 +433,8 @@ controlled delay before every market-event callback. `0` disables the delay:
 ```
 
 `tools/symbol-cardinality.conf` compares 375, 3,750, and 10,000 subscribed symbols while keeping the recurring
-workload at 150,000 events/s:
+workload at 150,000 events/s. A rotating 375-symbol slice ticks in each publication, so the entire universe can become
+active over time. Use `tools/inactive-subscription-cardinality.conf` when only the first 375 symbols should ever tick:
 
 ```powershell
 .\build\Release\latency_runner.exe --binary-directory .\build\Release `
@@ -702,6 +709,9 @@ The full-versus-delivery-only resource comparison is in
 The delivery-only release-stack control for v5.0.0, v7.0.0, and v8.0.0 is summarized in
 [`benchmark-results/SDK-VERSION-COMPARISON.md`](benchmark-results/SDK-VERSION-COMPARISON.md), with source reports
 under `20260907T133807Z`, `20260907T135741Z`, and `20260907T134755Z`, respectively.
+The mostly idle subscription-cardinality comparison between Graal `STREAM_FEED` and legacy default delivery is in
+[`benchmark-results/20260907T145209Z/REPORT.md`](benchmark-results/20260907T145209Z/REPORT.md) and
+[`benchmark-results/INACTIVE-SUBSCRIPTION-CARDINALITY.md`](benchmark-results/INACTIVE-SUBSCRIPTION-CARDINALITY.md).
 
 The legacy C API does not implement the newer client-side FEED conflation mechanism, delivers events to its callback
 one at a time, and does not support `TextMessage`, which the Graal benchmark uses as the exact per-publication

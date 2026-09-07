@@ -741,6 +741,16 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
         suite.timeSeriesHistoryLimit = *historyLimit;
     }
 
+    if (const auto found = settings.find("ACTIVE_SYMBOLS"); found != settings.end()) {
+        const auto activeSymbolCount = parseSize(found->second, "ACTIVE_SYMBOLS");
+
+        if (!activeSymbolCount) {
+            return std::unexpected{activeSymbolCount.error()};
+        }
+
+        suite.activeSymbolCount = *activeSymbolCount;
+    }
+
     if (const auto found = settings.find("TIME_SERIES_SUBSCRIBE_AFTER"); found != settings.end()) {
         if (found->second.empty()) {
             return std::unexpected{"TIME_SERIES_SUBSCRIBE_AFTER must not be empty"};
@@ -794,6 +804,7 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
                                               "MONITORING_PERIOD",
                                               "TIME_SERIES_PREFILL",
                                               "TIME_SERIES_HISTORY",
+                                              "ACTIVE_SYMBOLS",
                                               "TIME_SERIES_SUBSCRIBE_AFTER",
                                               "TIME_SERIES_UNSUBSCRIBE_AFTER_SNAPSHOT",
                                               "CLIENT_ROLE",
@@ -842,6 +853,21 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
         if (!task) {
             return std::unexpected{std::format("Invalid task for profile {} at {}: {}", profile.name,
                                                task.error().position, task.error().message)};
+        }
+
+        if (suite.activeSymbolCount) {
+            if (*suite.activeSymbolCount > task->symbolCount()) {
+                return std::unexpected{std::format("ACTIVE_SYMBOLS={} exceeds the {} subscribed symbols in profile {}",
+                                                   *suite.activeSymbolCount, task->symbolCount(), profile.name)};
+            }
+
+            for (const auto &item : task->items) {
+                if (item.quantity > *suite.activeSymbolCount) {
+                    return std::unexpected{
+                        std::format("ACTIVE_SYMBOLS={} is smaller than the {} quantity {} in profile {}",
+                                    *suite.activeSymbolCount, eventKindName(item.kind), item.quantity, profile.name)};
+                }
+            }
         }
 
         if (profile.timeSeriesSubscribeAfter && !task->quantity(EventKind::TIME_AND_SALE).value_or(0)) {
@@ -990,12 +1016,15 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
             std::cout << std::format("{} : {} ; client={} role={} events-batch-limit={} aggregation-period={} "
                                      "listener-delay={} startup-timeout={} time-series-prefill={} "
                                      "time-series-history={} time-series-subscribe-after={} "
-                                     "time-series-unsubscribe-after-snapshot={} warmup={} duration={}\n",
+                                     "time-series-unsubscribe-after-snapshot={} active-symbols={} warmup={} "
+                                     "duration={}\n",
                                      run.prefix, run.task, run.clientImplementation, run.clientRole,
                                      run.eventsBatchLimit, run.aggregationPeriod, run.listenerDelay,
                                      suite.startupTimeout, run.timeSeriesPrefill, run.timeSeriesHistoryLimit,
                                      run.timeSeriesSubscribeAfter.value_or("disabled"),
-                                     run.timeSeriesUnsubscribeAfterSnapshot, suite.warmup, suite.duration);
+                                     run.timeSeriesUnsubscribeAfterSnapshot,
+                                     suite.activeSymbolCount ? std::to_string(*suite.activeSymbolCount) : "all",
+                                     suite.warmup, suite.duration);
         }
 
         std::cout << std::format("Analyzer: {} --monitoring-period {}\n", analyzer.string(), suite.monitoringPeriod);
@@ -1067,6 +1096,8 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
                 << "aggregation_period=" << overrides.aggregationPeriod.value_or(suite.aggregationPeriod) << '\n';
     environment << "time_series_prefill_default=" << suite.timeSeriesPrefill << '\n'
                 << "time_series_history_default=" << suite.timeSeriesHistoryLimit << '\n'
+                << "active_symbols=" << (suite.activeSymbolCount ? std::to_string(*suite.activeSymbolCount) : "all")
+                << '\n'
                 << "time_series_subscribe_after_default=" << suite.timeSeriesSubscribeAfter.value_or("disabled") << '\n'
                 << "time_series_unsubscribe_after_snapshot=" << suite.timeSeriesUnsubscribeAfterSnapshot << '\n';
     environment.flush();
@@ -1088,6 +1119,11 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
                                                  suite.monitoringPeriod,
                                                  "--time-series-history",
                                                  std::to_string(run.timeSeriesHistoryLimit)};
+
+        if (suite.activeSymbolCount) {
+            serverArguments.insert(serverArguments.end(),
+                                   {"--active-symbols", std::to_string(*suite.activeSymbolCount)});
+        }
 
         if (run.clientImplementation != "graal") {
             serverArguments.insert(serverArguments.end(), {"--task", run.task});

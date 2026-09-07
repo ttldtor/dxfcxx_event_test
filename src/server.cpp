@@ -141,6 +141,7 @@ class Generator {
     std::deque<Command> commands_;
     std::array<std::unordered_set<std::string>, 6> subscribedSymbols_;
     std::size_t timeSeriesHistoryLimit_{};
+    std::optional<std::size_t> activeSymbolCount_;
     bool traceSubscriptions_{};
     bool stopping_{};
     std::thread thread_;
@@ -169,6 +170,7 @@ class Generator {
     struct ActiveTask {
         std::string command;
         latency::TaskPattern pattern;
+        std::size_t activeSymbolCount{};
         std::vector<EventPool> pools;
         std::shared_ptr<TextMessage> marker;
         std::vector<std::shared_ptr<EventType>> publication;
@@ -187,9 +189,29 @@ class Generator {
     struct PendingTask {
         std::string command;
         latency::TaskPattern pattern;
+        std::size_t activeSymbolCount{};
         std::vector<std::string> profileSymbols;
         std::vector<std::string> marketSymbols;
     };
+
+    /** Resolves and validates the base-symbol subset that receives recurring publications. */
+    std::size_t resolveActiveSymbolCount(const latency::TaskPattern &pattern) const {
+        const auto count = activeSymbolCount_.value_or(pattern.symbolCount());
+
+        if (count > pattern.symbolCount()) {
+            throw std::invalid_argument(
+                std::format("active symbol count {} exceeds subscribed symbol count {}", count, pattern.symbolCount()));
+        }
+
+        for (const auto &item : pattern.items) {
+            if (item.quantity > count) {
+                throw std::invalid_argument(std::format("active symbol count {} is smaller than {} event quantity {}",
+                                                        count, latency::eventKindName(item.kind), item.quantity));
+            }
+        }
+
+        return count;
+    }
 
     bool containsAll(SubscriptionKind kind, const std::vector<std::string> &symbols) const {
         const auto &subscribed = subscribedSymbols_[subscriptionKindIndex(kind)];
@@ -253,11 +275,25 @@ class Generator {
         throw std::invalid_argument("unknown event kind");
     }
 
-    /** Allocates one stable event object per subscribed record key for rotating publication selection. */
-    static std::vector<EventPool> makeEventPools(const latency::TaskPattern &pattern) {
+    /** Allocates stable event objects only for record keys in the configured active base-symbol subset. */
+    static std::vector<EventPool> makeEventPools(const latency::TaskPattern &pattern, std::size_t activeSymbolCount) {
         std::vector<EventPool> pools;
-        const auto marketSymbols = pattern.marketSymbols();
-        const auto baseSymbols = pattern.symbols();
+        auto baseSymbols = pattern.symbols();
+
+        baseSymbols.resize(activeSymbolCount);
+
+        std::vector<std::string> marketSymbols;
+
+        marketSymbols.reserve(activeSymbolCount * (pattern.regionalSourceCount + 1));
+        marketSymbols.insert(marketSymbols.end(), baseSymbols.begin(), baseSymbols.end());
+
+        for (std::size_t source = 0; source < pattern.regionalSourceCount; ++source) {
+            const auto suffix = static_cast<char>('A' + source);
+
+            for (const auto &symbol : baseSymbols) {
+                marketSymbols.push_back(std::format("{}&{}", symbol, suffix));
+            }
+        }
 
         pools.reserve(pattern.items.size());
 
@@ -433,7 +469,7 @@ class Generator {
         // Event fields identify the batch. Composite/regional routing changes record-key cardinality, not batch size.
         for (const auto poolIndex : active.poolOrder) {
             const auto &pool = active.pools[poolIndex];
-            const auto baseSymbolCount = active.pattern.symbolCount();
+            const auto baseSymbolCount = active.activeSymbolCount;
             const auto first = active.publications * pool.quantity % baseSymbolCount;
             auto regionalRandom = active.pattern.shuffleSeed.value_or(0x22805ULL) ^ active.publications ^
                                   (static_cast<std::uint64_t>(poolIndex) << 32U);
@@ -550,21 +586,21 @@ class Generator {
                 }
 
                 auto publication = std::vector<std::shared_ptr<EventType>>{};
-                auto pools = makeEventPools(pending->pattern);
+                auto pools = makeEventPools(pending->pattern, pending->activeSymbolCount);
                 auto poolOrder = std::vector<std::size_t>(pools.size());
 
                 publication.reserve(pending->pattern.eventCount() + 1);
                 std::iota(poolOrder.begin(), poolOrder.end(), 0);
                 active.emplace(
-                    ActiveTask{pending->command, pending->pattern, std::move(pools),
+                    ActiveTask{pending->command, pending->pattern, pending->activeSymbolCount, std::move(pools),
                                std::make_shared<TextMessage>(latency::markerSymbol(pending->command), "LATENCY_BATCH"),
                                std::move(publication), std::move(poolOrder)});
                 nextTick = std::chrono::steady_clock::now();
                 std::cout << std::format("Subscriptions ready for {} profile and {} market symbols. Started {} "
-                                         "({} events/batch, "
+                                         "({} active base symbols, {} events/batch, "
                                          "period={} ms, nominal={:.3f} events/s)\n",
                                          pending->profileSymbols.size(), pending->marketSymbols.size(),
-                                         pending->command, active->pattern.eventCount(),
+                                         pending->command, active->activeSymbolCount, active->pattern.eventCount(),
                                          active->pattern.publishPeriod.count(),
                                          active->pattern.nominalEventsPerSecond())
                           << std::flush;
@@ -626,12 +662,19 @@ class Generator {
                         std::cerr << "Rejected task at " << parsed.error().position << ": " << parsed.error().message
                                   << " [" << command.text << "]\n";
                     } else if (!active && !pending) {
-                        pending.emplace(PendingTask{command.text, *parsed, parsed->symbols(), parsed->marketSymbols()});
-                        std::cout
-                            << std::format(
-                                   "Waiting for subscriptions before starting {} ({} profile, {} market symbols)\n",
-                                   command.text, pending->profileSymbols.size(), pending->marketSymbols.size())
-                            << std::flush;
+                        try {
+                            const auto activeSymbolCount = resolveActiveSymbolCount(*parsed);
+
+                            pending.emplace(PendingTask{command.text, *parsed, activeSymbolCount, parsed->symbols(),
+                                                        parsed->marketSymbols()});
+                            std::cout << std::format("Waiting for subscriptions before starting {} "
+                                                     "({} profile, {} market, {} active base symbols)\n",
+                                                     command.text, pending->profileSymbols.size(),
+                                                     pending->marketSymbols.size(), pending->activeSymbolCount)
+                                      << std::flush;
+                        } catch (const std::exception &e) {
+                            std::cerr << "Rejected task " << command.text << ": " << e.what() << '\n';
+                        }
                     } else if ((active && active->command != command.text) ||
                                (pending && pending->command != command.text)) {
                         // The protocol intentionally supports one active load profile at a time.
@@ -708,11 +751,11 @@ class Generator {
     }
 
     public:
-    /** Starts the generator worker for a publisher and optionally logs observed symbol cardinality. */
+    /** Starts the generator worker with optional active-symbol restriction and subscription tracing. */
     explicit Generator(std::shared_ptr<DXPublisher> publisher, std::size_t timeSeriesHistoryLimit,
-                       bool traceSubscriptions = false)
+                       std::optional<std::size_t> activeSymbolCount, bool traceSubscriptions = false)
         : publisher_(std::move(publisher)), timeSeriesHistoryLimit_(timeSeriesHistoryLimit),
-          traceSubscriptions_(traceSubscriptions), thread_([this] {
+          activeSymbolCount_(activeSymbolCount), traceSubscriptions_(traceSubscriptions), thread_([this] {
               run();
           }) {
     }
@@ -799,6 +842,9 @@ struct Config {
 
     /** Maximum retained TimeAndSale events per symbol. */
     std::size_t timeSeriesHistoryLimit{1'000};
+
+    /** Optional number of leading subscribed base symbols that receive recurring events. */
+    std::optional<std::size_t> activeSymbolCount;
 };
 
 /** Parses and validates benchmark-server command-line arguments. */
@@ -814,6 +860,7 @@ Config parseArgs(int argc, char **argv) {
   --task SUB:T1@100ms      queue a task without the TextMessage control channel
   --monitoring-stat 10s    0 disables QD statistics
   --time-series-history N  retained TimeAndSale events per symbol; default 1000
+  --active-symbols N       publish only on the first N subscribed base symbols
   --trace-subscriptions    log observed composite and regional symbol counts
 )";
             std::exit(0);
@@ -859,6 +906,15 @@ Config parseArgs(int argc, char **argv) {
             }
 
             config.timeSeriesHistoryLimit = parsed;
+        } else if (arg == "--active-symbols") {
+            std::size_t parsed{};
+            const auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+
+            if (error != std::errc{} || ptr != value.data() + value.size() || parsed == 0) {
+                throw std::invalid_argument("active symbol count must be a positive integer");
+            }
+
+            config.activeSymbolCount = parsed;
         } else {
             throw std::invalid_argument(std::format("unknown argument: {}", arg));
         }
@@ -895,7 +951,8 @@ int main(int argc, char **argv) {
 
         const auto endpoint = endpointBuilder->build();
         const auto publisher = endpoint->getPublisher();
-        Generator generator{publisher, config.timeSeriesHistoryLimit, config.traceSubscriptions};
+        Generator generator{publisher, config.timeSeriesHistoryLimit, config.activeSymbolCount,
+                            config.traceSubscriptions};
 
         /** Owns an observable subscription and the identifier of its registered listener. */
         struct ObservedSubscription {

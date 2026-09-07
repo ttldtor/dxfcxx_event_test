@@ -95,6 +95,9 @@ struct BenchmarkSuite {
     /// Maximum retained TimeAndSale events per symbol in the synthetic server.
     std::size_t timeSeriesHistoryLimit{1'000};
 
+    /// Optional number of leading subscribed base symbols that the synthetic publisher actively rotates through.
+    std::optional<std::size_t> activeSymbolCount;
+
     /// Optional delay from measurement start before adding TimeAndSale; empty keeps pre-measurement subscription.
     std::optional<std::string> timeSeriesSubscribeAfter;
 

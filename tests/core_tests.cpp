@@ -508,6 +508,7 @@ WINDOW=1s
 BATCH_TIMEOUT=3s
 STARTUP_TIMEOUT=4s
 MONITORING_PERIOD=1s
+ACTIVE_SYMBOLS=2
 CLIENT_ROLE=feed
 LISTENER_DELAY=5us
 EVENTS_BATCH_LIMIT=optimal
@@ -515,7 +516,7 @@ AGGREGATION_PERIOD=0
 COOLDOWN_SECONDS=0
 ADDRESS=127.0.0.1:7400
 LISTEN_ADDRESS=:7400
-PROFILE=first|SUB:Q1
+PROFILE=first|SUB:Q1#2
 PROFILE=second|SUB:T2|stream-feed|1|10ms|legacy|3s|250
 )"};
     const auto suite = parseBenchmarkSuite(input);
@@ -528,6 +529,7 @@ PROFILE=second|SUB:T2|stream-feed|1|10ms|legacy|3s|250
     CHECK(suite->experiment.successCriteria == "Every field is preserved.");
     CHECK(suite->experiment.limitations == "Parser test only.");
     CHECK(suite->repetitions == 2);
+    CHECK(suite->activeSymbolCount == 2);
     CHECK(suite->profiles.size() == 2);
     CHECK(suite->profiles[1].clientRole == "stream-feed");
     CHECK(suite->profiles[1].eventsBatchLimit == "1");
@@ -716,4 +718,24 @@ PROFILE=time-series|SUB:Q1;N1
 )"};
 
     CHECK_FALSE(parseBenchmarkSuite(invalidBoolean).has_value());
+
+    std::istringstream invalidActiveSymbols{R"(REPETITIONS=1
+WARMUP=1s
+DURATION=2s
+WINDOW=1s
+BATCH_TIMEOUT=1s
+STARTUP_TIMEOUT=1s
+MONITORING_PERIOD=1s
+ACTIVE_SYMBOLS=1
+CLIENT_ROLE=stream-feed
+COOLDOWN_SECONDS=0
+ADDRESS=127.0.0.1:7400
+LISTEN_ADDRESS=:7400
+PROFILE=active|SUB:Q2@10ms#10||||graal-delivery
+)"};
+
+    const auto invalidActive = parseBenchmarkSuite(invalidActiveSymbols);
+
+    REQUIRE_FALSE(invalidActive.has_value());
+    CHECK(invalidActive.error().contains("smaller than the Quote quantity"));
 }
