@@ -62,6 +62,46 @@ It is not an API-only measurement unless the other stages are controlled or inst
 The legacy subscription expansion is visible in the
 [old C API record mapping](https://github.com/dxFeed/dxfeed-c-api/blob/299eced3327deef995694d9e7c65319096f6e3e8/src/EventData.c#L177).
 
+## Our measurement design
+
+The controlled benchmark is not a synthetic copy of the customer's live test. It deliberately decomposes the
+investigation into separate questions so that delivery, latency, sample selection, batching, and resource pressure
+are not inferred from one histogram.
+
+The publisher and client run as separate native processes on the same host and communicate over a QD network
+connection on loopback. This removes the production server topology, external network, and cross-machine clock skew,
+while retaining event serialization, QD transport and endpoint processing, the Graal native boundary, C++ event
+conversion, executor scheduling, and listener invocation.
+
+The benchmark records the following independent evidence:
+
+| Measurement layer | What is recorded | Question answered |
+|---|---|---|
+| Publication-correlated E2E latency | A nanosecond Unix timestamp is carried by a `TextMessage` in the same publication; synthetic correlation fields associate Quote, Trade, TradeETH, and Summary with that publication | How long did a known synthetic publication take to reach the C++ listener? |
+| Native source-time control | Trade and TradeETH carry their normal millisecond source time; all, per-series, and customer-global selection are applied to the same callback | How much does the customer's selection algorithm change the population and its distribution? |
+| Delivery accounting | Published events, listener-observed events, full/partial/empty correlated publications, excess and uncorrelated events | Was a latency distribution calculated from the expected delivered population? |
+| Callback behavior | Callback count, events per callback, callback duration, and configured native batch limit | Did batching or listener invocation overhead change? |
+| QD monitoring | Read/write records/s, data lag, buffers, `Dropped`, CPU, and subscriptions where available | Is a listener deficit accompanied by transport pressure or a QD-reported drop? |
+| Process resources | Client/server CPU and RSS sampled over the measurement interval | Was the process near an obvious CPU or memory limit? |
+
+The nanosecond marker is the primary controlled latency clock. The Trade/TradeETH source-time measurement is a
+secondary methodology control and is deliberately reduced to the customer's millisecond resolution. The two must
+not be mixed: one measures a known publication path, while the other demonstrates what the customer's filter does
+to source-time observations.
+
+Each suite records its objective, changed variable, controls, success criteria, and limitations in `suite.conf`.
+Runs use an explicit warm-up and measurement boundary, fixed-duration windows, repeated scenarios, deterministic
+event ordering, and the same configured offered load. The analyzer reports run-level values, medians and ranges
+across repetitions, uncapped latency percentiles, upper-IQR outlier counts, delivery integrity, and monitoring data.
+
+`STREAM_FEED` is used as the exact-delivery control. `FEED` is measured separately because normal TICKER semantics
+may supersede intermediate states before listener delivery. A callback batch limit of one is an intentional stress
+variable, not an assumed production default.
+
+This design can isolate regressions in the controlled local client/API path and can show when a measurement
+algorithm changes its own sample. It cannot reproduce a production-only server, network, clock, or live-burst fault
+unless that condition is recorded or deliberately injected.
+
 ## Controlled reproduction of the selection rule
 
 The benchmark publishes Quote, Trade, TradeETH, and Summary for 375 shared symbols every 10 ms: 1,500 events per
