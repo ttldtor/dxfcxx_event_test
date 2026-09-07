@@ -347,7 +347,7 @@ after,2026-01-02T00:00:01.100Z,2026-01-02T00:00:02.000Z,900,event,90,90,90,0,1,0
     CHECK(reportText.contains("## TimeAndSale snapshot and live cutover"));
     CHECK(reportText.contains("## Ticker latency around TimeAndSale snapshot delivery"));
     CHECK(reportText.contains("| example | during | 3 | 100.000 ms | 100.000%"));
-    CHECK(reportText.contains("| example | 3 | 1 | 200 (200–200)"));
+    CHECK(reportText.contains("| example | 3 | retained | 1 | 200 (200–200)"));
     CHECK(reportText.contains("| legacy-example | default | 3 | 400.000 | 400.000"));
     CHECK(reportText.contains("| example | stream-feed | unknown | 0.000 ms | 3 |"));
     CHECK(reportText.contains("Listener coverage median"));
@@ -540,6 +540,7 @@ BATCH_TIMEOUT=3s
 STARTUP_TIMEOUT=4s
 MONITORING_PERIOD=1s
 TIME_SERIES_SUBSCRIBE_AFTER=1s
+TIME_SERIES_UNSUBSCRIBE_AFTER_SNAPSHOT=true
 CLIENT_ROLE=feed
 COOLDOWN_SECONDS=0
 ADDRESS=127.0.0.1:7400
@@ -550,9 +551,11 @@ PROFILE=overlap|SUB:Q1;N1
 
     REQUIRE(overlapSuite.has_value());
     REQUIRE(overlapSuite->timeSeriesSubscribeAfter == "1s");
+    CHECK(overlapSuite->timeSeriesUnsubscribeAfterSnapshot);
     const auto overlapPlan = buildBenchmarkPlan(*overlapSuite);
     REQUIRE(overlapPlan.size() == 1);
     CHECK(overlapPlan.front().timeSeriesSubscribeAfter == "1s");
+    CHECK(overlapPlan.front().timeSeriesUnsubscribeAfterSnapshot);
 }
 
 TEST_CASE("invalid benchmark suite settings are rejected") {
@@ -635,4 +638,41 @@ PROFILE=time-series|SUB:Q1;N1|||||2s|0
 
     REQUIRE_FALSE(invalidHistory.has_value());
     CHECK(invalidHistory.error().contains("Time-series history for profile time-series"));
+
+    std::istringstream missingDelayedSubscription{R"(REPETITIONS=1
+WARMUP=1s
+DURATION=2s
+WINDOW=1s
+BATCH_TIMEOUT=1s
+STARTUP_TIMEOUT=1s
+MONITORING_PERIOD=1s
+TIME_SERIES_UNSUBSCRIBE_AFTER_SNAPSHOT=true
+CLIENT_ROLE=feed
+COOLDOWN_SECONDS=0
+ADDRESS=127.0.0.1:7400
+LISTEN_ADDRESS=:7400
+PROFILE=time-series|SUB:Q1;N1
+)"};
+
+    const auto invalidUnsubscribe = parseBenchmarkSuite(missingDelayedSubscription);
+
+    REQUIRE_FALSE(invalidUnsubscribe.has_value());
+    CHECK(invalidUnsubscribe.error().contains("requires a delayed subscription"));
+
+    std::istringstream invalidBoolean{R"(REPETITIONS=1
+WARMUP=1s
+DURATION=2s
+WINDOW=1s
+BATCH_TIMEOUT=1s
+STARTUP_TIMEOUT=1s
+MONITORING_PERIOD=1s
+TIME_SERIES_UNSUBSCRIBE_AFTER_SNAPSHOT=yes
+CLIENT_ROLE=feed
+COOLDOWN_SECONDS=0
+ADDRESS=127.0.0.1:7400
+LISTEN_ADDRESS=:7400
+PROFILE=time-series|SUB:Q1;N1
+)"};
+
+    CHECK_FALSE(parseBenchmarkSuite(invalidBoolean).has_value());
 }

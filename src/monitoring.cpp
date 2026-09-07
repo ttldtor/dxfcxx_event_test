@@ -131,6 +131,7 @@ struct TimeSeriesRunRow {
     double liveLatencyP99Us{};
     double liveLatencyP999Us{};
     double liveLatencyMaximumUs{};
+    bool unsubscribedAfterSnapshot{};
     double cpuCorePercent{std::numeric_limits<double>::quiet_NaN()};
     double cpuHostPercent{std::numeric_limits<double>::quiet_NaN()};
     double rssMeanBytes{std::numeric_limits<double>::quiet_NaN()};
@@ -989,18 +990,21 @@ std::expected<TimeSeriesRunRow, std::string> readTimeSeries(const std::filesyste
     row.liveLatencyP99Us = values[20];
     row.liveLatencyP999Us = values[21];
     row.liveLatencyMaximumUs = values[22];
+    const auto unsubscribedAfterSnapshot = optionalNumber("unsubscribed_after_snapshot");
     const auto cpuCorePercent = optionalNumber("cpu_core_percent");
     const auto cpuHostPercent = optionalNumber("cpu_host_percent");
     const auto rssMeanBytes = optionalNumber("rss_mean_bytes");
     const auto rssMaximumBytes = optionalNumber("rss_maximum_bytes");
     const auto resourceSamples = optionalNumber("resource_samples");
 
-    for (const auto *value : {&cpuCorePercent, &cpuHostPercent, &rssMeanBytes, &rssMaximumBytes, &resourceSamples}) {
+    for (const auto *value : {&unsubscribedAfterSnapshot, &cpuCorePercent, &cpuHostPercent, &rssMeanBytes,
+                              &rssMaximumBytes, &resourceSamples}) {
         if (!*value) {
             return std::unexpected(value->error());
         }
     }
 
+    row.unsubscribedAfterSnapshot = std::isfinite(*unsubscribedAfterSnapshot) && *unsubscribedAfterSnapshot != 0;
     row.cpuCorePercent = *cpuCorePercent;
     row.cpuHostPercent = *cpuHostPercent;
     row.rssMeanBytes = *rssMeanBytes;
@@ -1009,7 +1013,8 @@ std::expected<TimeSeriesRunRow, std::string> readTimeSeries(const std::filesyste
     row.integrityOk = row.requestedSymbols > 0 && row.completedSymbols == row.requestedSymbols &&
                       row.snapshotBegins == row.requestedSymbols &&
                       row.snapshotEnds + row.snapshotSnips == row.requestedSymbols && row.duplicateIndices == 0 &&
-                      row.prematureLiveEvents == 0 && row.clockAnomalies == 0 && row.liveLatencySamples > 0;
+                      row.prematureLiveEvents == 0 && row.clockAnomalies == 0 &&
+                      (row.unsubscribedAfterSnapshot || row.liveLatencySamples > 0);
 
     return row;
 }
@@ -1519,7 +1524,7 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
                       "\"live_latency_mean_us\",\"live_latency_p50_us\",\"live_latency_p90_us\","
                       "\"live_latency_p99_us\",\"live_latency_p999_us\",\"live_latency_max_us\","
                       "\"cpu_core_percent\",\"cpu_host_percent\",\"rss_mean_bytes\",\"rss_maximum_bytes\","
-                      "\"resource_samples\",\"integrity_ok\"\n";
+                      "\"resource_samples\",\"unsubscribed_after_snapshot\",\"integrity_ok\"\n";
 
     for (const auto &row : timeSeriesRows) {
         writeColumn(timeSeriesRuns, row.profile, true);
@@ -1543,6 +1548,8 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
             writeColumn(timeSeriesRuns, value);
         }
 
+        writeColumn(timeSeriesRuns,
+                    row.unsubscribedAfterSnapshot ? std::string_view{"True"} : std::string_view{"False"});
         writeColumn(timeSeriesRuns, row.integrityOk ? std::string_view{"True"} : std::string_view{"False"});
         timeSeriesRuns << '\n';
     }
@@ -1885,11 +1892,11 @@ sampled by the cross-platform `ttldtor/Process` library during the measurement i
     if (!timeSeriesScenarios.empty()) {
         report << R"(## TimeAndSale snapshot and live cutover
 
-The client adds a separate HISTORY subscription after the configured prefill. Snapshot and live values are medians
-across repetitions; the event range is the minimum and maximum complete snapshot size.
+The client adds a separate HISTORY subscription for the configured retained interval. Snapshot and live values are
+medians across repetitions; the event range is the minimum and maximum complete snapshot size.
 
-| Scenario | Runs | Completed symbols | Snapshot events median (range) | Snapshot callbacks | Snapshot duration | SNIP | First live vs global completion | Live p99 | CPU, one-core basis | RSS mean / maximum | Integrity |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| Scenario | Runs | After snapshot | Completed symbols | Snapshot events median (range) | Snapshot callbacks | Snapshot duration | SNIP | First live vs global completion | Live p99 | CPU, one-core basis | RSS mean / maximum | Integrity |
+|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
 )";
 
         for (const auto &[scenario, rows] : timeSeriesScenarios) {
@@ -1917,15 +1924,18 @@ across repetitions; the event range is the minimum and maximum complete snapshot
             const auto integrity = std::ranges::all_of(rows, [](const auto *row) {
                 return row->integrityOk;
             });
+            const auto removed = std::ranges::all_of(rows, [](const auto *row) {
+                return row->unsubscribedAfterSnapshot;
+            });
             const auto resourceText = [](const RunComparison &value, double divisor, std::string_view suffix) {
                 return value.runs ? std::format("{:.3f}{}", value.median / divisor, suffix) : std::string{"n/a"};
             };
 
-            report << std::format("| {} | {} | {:.0f} | {:.0f} ({:.0f}–{:.0f}) | {:.0f} | {:.3f} ms | {:.0f} | "
+            report << std::format("| {} | {} | {} | {:.0f} | {:.0f} ({:.0f}–{:.0f}) | {:.0f} | {:.3f} ms | {:.0f} | "
                                   "{:.3f} ms | {:.3f} us | {} | {} / {} | {} |\n",
-                                  scenario, rows.size(), completed.median, events.median, events.minimum,
-                                  events.maximum, callbacks.median, duration.median, snips.median, cutover.median,
-                                  liveP99.median, resourceText(cpuCore, 1.0, "%"),
+                                  scenario, rows.size(), removed ? "removed" : "retained", completed.median,
+                                  events.median, events.minimum, events.maximum, callbacks.median, duration.median,
+                                  snips.median, cutover.median, liveP99.median, resourceText(cpuCore, 1.0, "%"),
                                   resourceText(rssMean, 1'048'576.0, " MiB"),
                                   resourceText(rssMaximum, 1'048'576.0, " MiB"), integrity ? "OK" : "CHECK");
         }
@@ -1933,12 +1943,16 @@ across repetitions; the event range is the minimum and maximum complete snapshot
         report << R"(
 
 Integrity requires every requested symbol to complete with `SNAPSHOT_END` or `SNAPSHOT_SNIP`, no duplicate indices,
-no live events before that symbol's snapshot completion, no clock anomalies, and at least one measured live
-TimeAndSale event.
+no live events before that symbol's snapshot completion, and no clock anomalies. A run that retains its TimeAndSale
+subscription must also measure at least one live TimeAndSale event; a matched-recovery run may remove all symbols at
+global snapshot completion.
 `First live vs global completion` is negative when symbols that completed early start receiving live updates while
 snapshots for other symbols are still in progress; this is valid per-symbol snapshot-to-live overlap. `SNAPSHOT_SNIP`
 is reported separately because it is an expected bounded-history condition, not an integrity failure.
-CPU and RSS are sampled in the Graal client during the configured measurement interval, after the initial snapshot.)"
+In a matched-recovery run, `Live p99` covers only per-symbol live-cutover events received before global snapshot
+completion and removal; it is not a post-snapshot steady-state measurement.
+CPU and RSS are sampled in the Graal client during the configured measurement interval. Delayed-subscription runs
+include the snapshot, while subscriptions completed before measurement sample only the post-snapshot interval.)"
                << "\n\n";
     }
 

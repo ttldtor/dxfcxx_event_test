@@ -105,6 +105,7 @@ struct Config {
     std::chrono::milliseconds warmup{30s}, duration{5min}, window{10s}, batchTimeout{30s}, startupTimeout{30s};
     std::chrono::milliseconds timeSeriesPrefill{2s};
     std::optional<std::chrono::milliseconds> timeSeriesSubscribeAfter;
+    bool timeSeriesUnsubscribeAfterSnapshot{};
     std::chrono::milliseconds listenerDelay{};
     std::chrono::milliseconds aggregationPeriod{};
     std::optional<std::chrono::milliseconds> monitoringStat{10s};
@@ -168,6 +169,8 @@ Config parseArgs(int argc, char **argv) {
   --time-series-prefill 2s retain live TimeAndSale events before subscribing
   --time-series-subscribe-after 10s
                            add TimeAndSale during measurement after this delay
+  --time-series-unsubscribe-after-snapshot
+                           remove TimeAndSale symbols when the delayed snapshot completes
   --listener-delay 1ms     delay each market-event callback; default 0
   --aggregation-period 1ms aggregate market notifications; default 0
   --events-batch-limit N   optimal, maximum, or a positive integer; default optimal
@@ -176,6 +179,12 @@ Config parseArgs(int argc, char **argv) {
   --output PREFIX          default latency
 )";
             std::exit(0);
+        }
+
+        if (arg == "--time-series-unsubscribe-after-snapshot") {
+            config.timeSeriesUnsubscribeAfterSnapshot = true;
+
+            continue;
         }
 
         if (i + 1 >= argc) {
@@ -953,9 +962,15 @@ class TimeSeriesTracker {
         measuring_ = false;
     }
 
-    /** Writes one whole-run CSV row describing snapshot, live delivery, and measurement resources. */
+    /**
+     * Writes one whole-run CSV row describing snapshot, live delivery, and measurement resources.
+     * @param prefix Output path and filename prefix.
+     * @param fromTimeMs Requested HISTORY lower bound in Unix milliseconds.
+     * @param unsubscribedAfterSnapshot Whether TimeAndSale symbols were removed at global snapshot completion.
+     * @param resources Whole-measurement process resource statistics.
+     */
     void writeReport(const std::filesystem::path &prefix, std::int64_t fromTimeMs,
-                     const latency::ResourceStatistics &resources = {}) const {
+                     bool unsubscribedAfterSnapshot = false, const latency::ResourceStatistics &resources = {}) const {
         std::lock_guard lock{mutex_};
         auto path = prefix;
 
@@ -981,7 +996,7 @@ class TimeSeriesTracker {
                   "premature_live_events,live_events,clock_anomalies,first_event_delay_ms,snapshot_duration_ms,"
                   "first_live_relative_to_global_completion_ms,live_latency_samples,live_latency_mean_us,"
                   "live_latency_p50_us,live_latency_p90_us,live_latency_p99_us,live_latency_p999_us,"
-                  "live_latency_max_us,"
+                  "live_latency_max_us,unsubscribed_after_snapshot,"
                   "cpu_core_percent,cpu_host_percent,rss_mean_bytes,rss_maximum_bytes,resource_samples\n";
         output << fromTimeMs << ',' << expectedSymbols_ << ',' << symbols_.size() << ',' << completedSymbols_ << ','
                << snapshotEvents_ << ',' << snapshotCallbacks_ << ',' << snapshotBegins_ << ',' << snapshotEnds_ << ','
@@ -995,9 +1010,9 @@ class TimeSeriesTracker {
                << latency::nanosecondsToMicroseconds(statistics.p90) << ','
                << latency::nanosecondsToMicroseconds(statistics.p99) << ','
                << latency::nanosecondsToMicroseconds(statistics.p999) << ','
-               << latency::nanosecondsToMicroseconds(statistics.maximum) << ',' << resources.cpuCorePercent << ','
-               << resources.cpuHostPercent << ',' << resources.rssMeanBytes << ',' << resources.rssMaximumBytes << ','
-               << resources.samples << '\n';
+               << latency::nanosecondsToMicroseconds(statistics.maximum) << ',' << unsubscribedAfterSnapshot << ','
+               << resources.cpuCorePercent << ',' << resources.cpuHostPercent << ',' << resources.rssMeanBytes << ','
+               << resources.rssMaximumBytes << ',' << resources.samples << '\n';
         std::cout << std::format("TimeAndSale snapshot: symbols={}/{} events={} callbacks={} end={} snip={} "
                                  "premature-live={} duplicates={} live={} latency-p99={:.3f} us. Wrote {}\n",
                                  completedSymbols_, expectedSymbols_, snapshotEvents_, snapshotCallbacks_,
@@ -1400,6 +1415,11 @@ int main(int argc, char **argv) {
             throw std::invalid_argument("--time-series-subscribe-after must be shorter than --duration");
         }
 
+        if (config.timeSeriesUnsubscribeAfterSnapshot && !config.timeSeriesSubscribeAfter) {
+            throw std::invalid_argument(
+                "--time-series-unsubscribe-after-snapshot requires --time-series-subscribe-after");
+        }
+
         const auto expected = regularEventCount(*pattern);
         const auto windowBatches = std::max<std::size_t>(1, pattern->batchCount(config.window));
         const auto runBatches = std::max<std::size_t>(1, pattern->batchCount(config.duration));
@@ -1556,6 +1576,7 @@ int main(int argc, char **argv) {
         reporter.beginMeasurement(windowStartWall);
         const auto measurementEnd = measurementStart + config.duration;
         bool snapshotTimedOut{};
+        bool timeSeriesUnsubscribed{};
 
         if (config.timeSeriesSubscribeAfter) {
             enum class SnapshotPhase { BEFORE, DURING, AFTER };
@@ -1609,9 +1630,17 @@ int main(int argc, char **argv) {
                     const auto completedAtWall = timeSeriesTracker.snapshotCompletedAtNs();
 
                     flushPhase("during", now, completedAtWall);
+
+                    if (config.timeSeriesUnsubscribeAfterSnapshot) {
+                        timeSeriesSubscription->removeSymbols(pattern->symbols());
+                        timeSeriesUnsubscribed = true;
+                    }
+
                     phase = SnapshotPhase::AFTER;
                     nextResourceSample = now + 100ms;
-                    std::cout << "TimeAndSale HISTORY snapshot completed; continuing post-snapshot measurement.\n"
+                    std::cout << std::format("TimeAndSale HISTORY snapshot completed; TimeAndSale symbols {} and "
+                                             "post-snapshot measurement continues.\n",
+                                             config.timeSeriesUnsubscribeAfterSnapshot ? "removed" : "retained")
                               << std::flush;
 
                     continue;
@@ -1718,7 +1747,8 @@ int main(int argc, char **argv) {
                                  resourceStatistics.rssMaximumBytes / 1'048'576.0, resourceStatistics.samples);
 
         if (timeSeriesSubscription) {
-            timeSeriesTracker.writeReport(config.output, timeSeriesFromTimeMs, resourceStatistics);
+            timeSeriesTracker.writeReport(config.output, timeSeriesFromTimeMs, timeSeriesUnsubscribed,
+                                          resourceStatistics);
         }
 
         endpoint->closeAndAwaitTermination();

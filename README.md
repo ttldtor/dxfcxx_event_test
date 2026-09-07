@@ -104,6 +104,7 @@ interval. Its main options are:
 | `--startup-timeout` | `30s` | Maximum wait for all unique initial Profile symbols before warm-up. |
 | `--time-series-prefill` | `2s` | Time to retain live TimeAndSale events before adding the time-series symbols. |
 | `--time-series-subscribe-after` | disabled | Add the TimeAndSale subscription this long after measurement starts and report ticker latency before, during, and after its HISTORY snapshot. |
+| `--time-series-unsubscribe-after-snapshot` | disabled | Remove delayed TimeAndSale symbols at global snapshot completion so the before/after ticker workloads match. |
 | `--listener-delay` | `0` | Artificial delay at the start of each market-event callback. |
 | `--events-batch-limit` | `optimal` | Maximum market events per native notification: `optimal`, `maximum`, or a positive integer. |
 | `--aggregation-period` | `0` | Per-subscription market notification aggregation period; `0` disables explicit aggregation. |
@@ -152,6 +153,12 @@ delay, sets `fromTime` to the subscription time minus `--time-series-prefill`, a
 the recurring ticker load continues. The additional `<prefix>-snapshot-overlap.csv` divides Q/T/E/S latency,
 listener coverage, CPU, and RSS into `BEFORE`, `DURING`, and `AFTER` phases. The total measurement duration remains
 fixed; the option must therefore be shorter than `--duration`.
+
+With `--time-series-unsubscribe-after-snapshot`, the delayed TimeAndSale symbols are removed as soon as all requested
+symbol snapshots complete. The `after` phase then returns to the same Q/T/E/S subscription and nominal 150,000
+events/s used by the `before` phase. This isolates post-burst recovery from the extra 37,500 live TimeAndSale events/s
+that remain subscribed in the ordinary overlap experiment. Subscription removal is asynchronous, so the beginning of
+the `after` phase also includes its propagation time.
 
 `latency_analyzer` is a standalone post-processing utility and does not connect to dxFeed. It reads a directory of
 latency summaries and captured QD logs, then writes `monitoring.csv` and `monitoring-summary.csv`. Pass
@@ -308,7 +315,9 @@ Omitted fields inherit `CLIENT_ROLE`, `EVENTS_BATCH_LIMIT`, `AGGREGATION_PERIOD`
 `TIME_SERIES_HISTORY` from the suite. `TIME_SERIES_SUBSCRIBE_AFTER` is optional and disabled when omitted. Batch limit
 and aggregation default to `optimal` and `0`, while the client implementation defaults to `graal`. Command-line
 `--events-batch-limit` and `--aggregation-period` provide suite-wide overrides for profiles that do not specify them.
-The run manifest records the effective prefill, history limit, and delayed-subscription time for every execution.
+`TIME_SERIES_UNSUBSCRIBE_AFTER_SNAPSHOT=true` requires a delayed TimeAndSale subscription and applies to every
+TimeAndSale profile in the suite. The run manifest records the effective prefill, history limit, delayed-subscription
+time, and post-snapshot removal mode for every execution.
 
 A suite may describe its experiment with `EXPERIMENT_TITLE`, `EXPERIMENT_OBJECTIVE`, `EXPERIMENT_VARIABLE`,
 `EXPERIMENT_CONTROLS`, `EXPERIMENT_SUCCESS_CRITERIA`, and `EXPERIMENT_LIMITATIONS`. These settings are optional for
@@ -336,6 +345,11 @@ HISTORY subscription added ten seconds after ticker measurement begins. It keeps
 workload and nominal 187,500 events/s fixed while varying retained history depth across 100, 200, and 1,000 events per
 symbol. The analyzer writes `snapshot-overlap-runs.csv` and `snapshot-overlap-comparison.csv` and adds a
 before/during/after table to `REPORT.md`.
+
+[`tools/time-series-recovery.conf`](tools/time-series-recovery.conf) repeats that depth sweep but removes the
+TimeAndSale symbols at global snapshot completion. Its Q/T/E/S-only `before` and `after` phases therefore have the
+same 150,000 events/s subscribed workload, while the short `during` phase contains the HISTORY burst and live
+TimeAndSale updates. This matched control tests whether ticker latency recovers after the transient time-series load.
 
 For a short contract A/B, run `tools/conflation-diagnostic.conf` once with the default `feed` role and once with a
 `stream-feed` override. The task, symbol set, cadence, warm-up, and measurement duration remain identical:
@@ -627,6 +641,9 @@ cardinality/depth result and its interpretation are in
 experiment and its interpretation are in
 [`benchmark-results/20260907T095845Z/REPORT.md`](benchmark-results/20260907T095845Z/REPORT.md) and
 [`benchmark-results/TIME-SERIES-OVERLAP.md`](benchmark-results/TIME-SERIES-OVERLAP.md).
+The matched post-snapshot recovery control is in
+[`benchmark-results/20260907T104556Z/REPORT.md`](benchmark-results/20260907T104556Z/REPORT.md) and
+[`benchmark-results/TIME-SERIES-RECOVERY.md`](benchmark-results/TIME-SERIES-RECOVERY.md).
 
 The legacy C API does not implement the newer client-side FEED conflation mechanism, delivers events to its callback
 one at a time, and does not support `TextMessage`, which the Graal benchmark uses as the exact per-publication

@@ -98,6 +98,9 @@ struct BenchmarkSuite {
     /// Optional delay from measurement start before adding TimeAndSale; empty keeps pre-measurement subscription.
     std::optional<std::string> timeSeriesSubscribeAfter;
 
+    /// Whether to remove TimeAndSale symbols immediately after a delayed snapshot completes.
+    bool timeSeriesUnsubscribeAfterSnapshot{};
+
     /// Default client endpoint role.
     std::string clientRole;
 
@@ -175,6 +178,9 @@ struct BenchmarkRun {
 
     /// Effective delay from measurement start before adding TimeAndSale, when overlap measurement is enabled.
     std::optional<std::string> timeSeriesSubscribeAfter;
+
+    /// Whether this run removes TimeAndSale symbols immediately after the delayed snapshot completes.
+    bool timeSeriesUnsubscribeAfterSnapshot{};
 };
 
 /// Parses and validates a benchmark suite configuration.
