@@ -435,6 +435,64 @@ std::string eventKindName(EventKind kind) {
     return "Unknown";
 }
 
+void SourceTimeMethodComparison::reserve(std::size_t observations, std::size_t series) {
+    data_.all.reserve(observations);
+    data_.perSeriesMonotonic.reserve(observations);
+    lastBySeries_.reserve(series);
+}
+
+void SourceTimeMethodComparison::reset() {
+    data_.all.clear();
+    data_.perSeriesMonotonic.clear();
+    data_.globalMonotonic.clear();
+    data_.perSeriesRejected = 0;
+    data_.globalRejected = 0;
+    data_.negativeClamped = {};
+    lastBySeries_.clear();
+    lastGlobal_.reset();
+}
+
+void SourceTimeMethodComparison::observe(EventKind kind, std::string_view symbol, std::int64_t sourceTimeMs,
+                                         std::int64_t observedAtNs) {
+    if (sourceTimeMs <= 0) {
+        return;
+    }
+
+    const auto observedAtMs = observedAtNs / 1'000'000;
+    const auto latencyMs = observedAtMs - sourceTimeMs;
+    const auto latencyNs = std::max<std::int64_t>(0, latencyMs) * 1'000'000;
+    const auto append = [&](std::vector<std::int64_t> &target, std::size_t negativeIndex) {
+        target.push_back(latencyNs);
+
+        if (latencyMs < 0) {
+            ++data_.negativeClamped[negativeIndex];
+        }
+    };
+
+    append(data_.all, 0);
+
+    const auto series = std::format("{}:{}", static_cast<char>(kind), symbol);
+    auto [seriesIt, inserted] = lastBySeries_.try_emplace(series, sourceTimeMs);
+
+    if (inserted || sourceTimeMs > seriesIt->second) {
+        seriesIt->second = sourceTimeMs;
+        append(data_.perSeriesMonotonic, 1);
+    } else {
+        ++data_.perSeriesRejected;
+    }
+
+    if (!lastGlobal_ || sourceTimeMs > *lastGlobal_) {
+        lastGlobal_ = sourceTimeMs;
+        append(data_.globalMonotonic, 2);
+    } else {
+        ++data_.globalRejected;
+    }
+}
+
+SourceTimeMethodSnapshot SourceTimeMethodComparison::snapshot() const {
+    return data_;
+}
+
 double percentileInc(const std::vector<std::int64_t> &sortedValues, double percentile) {
     if (sortedValues.empty()) {
         return std::numeric_limits<double>::quiet_NaN();

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -10,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace latency {
@@ -201,6 +203,65 @@ struct Statistics {
     double outlierThreshold{};
     /** Number of values strictly above the upper outlier threshold. */
     std::size_t outlierCount{};
+};
+
+/**
+ * Owns latency samples selected from one Trade/TradeETH stream by three timestamp-filtering methods.
+ *
+ * Source timestamps and observations are deliberately reduced to milliseconds to reproduce the customer's
+ * measurement resolution. Negative latencies are represented as zero, matching the first histogram bin used by
+ * that measurement.
+ */
+struct SourceTimeMethodSnapshot {
+    /** Every Trade and TradeETH observation with a positive source timestamp. */
+    std::vector<std::int64_t> all;
+
+    /** Observations whose source timestamp strictly advances within one event-kind and symbol pair. */
+    std::vector<std::int64_t> perSeriesMonotonic;
+
+    /** Observations whose source timestamp strictly advances across the entire mixed event stream. */
+    std::vector<std::int64_t> globalMonotonic;
+
+    /** Number of per-series observations rejected because their timestamp was equal to or older than the last one. */
+    std::size_t perSeriesRejected{};
+
+    /** Number of globally filtered observations rejected because their timestamp did not advance the global maximum. */
+    std::size_t globalRejected{};
+
+    /** Negative latencies clamped to zero for the all, per-series, and global methods, respectively. */
+    std::array<std::size_t, 3> negativeClamped{};
+};
+
+/**
+ * Applies unfiltered, per-series monotonic, and global monotonic selection to the same source-time observations.
+ *
+ * The global method intentionally models a measurement that shares one last-seen timestamp across every Trade and
+ * TradeETH symbol. The per-series method provides the corresponding instrument-aware control.
+ */
+class SourceTimeMethodComparison {
+    SourceTimeMethodSnapshot data_;
+    std::unordered_map<std::string, std::int64_t> lastBySeries_;
+    std::optional<std::int64_t> lastGlobal_;
+
+    public:
+    /** Reserves storage for an expected run without changing accumulated observations. */
+    void reserve(std::size_t observations, std::size_t series);
+
+    /** Clears samples and timestamp-filter state for a new measurement interval. */
+    void reset();
+
+    /**
+     * Adds one Trade or TradeETH source-time observation to all applicable methods.
+     *
+     * @param kind Trade or TradeETH event kind used to distinguish independent series.
+     * @param symbol Event symbol used to distinguish independent series.
+     * @param sourceTimeMs Event source time in Unix milliseconds; non-positive values are ignored.
+     * @param observedAtNs Client observation time in Unix nanoseconds.
+     */
+    void observe(EventKind kind, std::string_view symbol, std::int64_t sourceTimeMs, std::int64_t observedAtNs);
+
+    /** Returns a copy of all accumulated samples and rejection counters. */
+    [[nodiscard]] SourceTimeMethodSnapshot snapshot() const;
 };
 
 /**

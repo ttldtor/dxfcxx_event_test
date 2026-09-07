@@ -1,0 +1,10 @@
+profile,repetition,task,client_implementation,client_role,events_batch_limit,aggregation_period,time_series_prefill,time_series_history,time_series_subscribe_after,time_series_unsubscribe_after_snapshot,status,client_exit_code
+"feed-optimal",1,"SUB:Q375;T375;E375;S375@10ms~22805",graal,feed,optimal,0,2s,1000,"",0,passed,0
+"feed-batch-1",1,"SUB:Q375;T375;E375;S375@10ms~22805",graal,feed,1,0,2s,1000,"",0,passed,0
+"stream-control",1,"SUB:Q375;T375;E375;S375@10ms~22805",graal,stream-feed,optimal,0,2s,1000,"",0,passed,0
+"feed-batch-1",2,"SUB:Q375;T375;E375;S375@10ms~22805",graal,feed,1,0,2s,1000,"",0,passed,0
+"stream-control",2,"SUB:Q375;T375;E375;S375@10ms~22805",graal,stream-feed,optimal,0,2s,1000,"",0,passed,0
+"feed-optimal",2,"SUB:Q375;T375;E375;S375@10ms~22805",graal,feed,optimal,0,2s,1000,"",0,passed,0
+"stream-control",3,"SUB:Q375;T375;E375;S375@10ms~22805",graal,stream-feed,optimal,0,2s,1000,"",0,passed,0
+"feed-optimal",3,"SUB:Q375;T375;E375;S375@10ms~22805",graal,feed,optimal,0,2s,1000,"",0,passed,0
+"feed-batch-1",3,"SUB:Q375;T375;E375;S375@10ms~22805",graal,feed,1,0,2s,1000,"",0,passed,0

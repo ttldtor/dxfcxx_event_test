@@ -29,6 +29,7 @@ constexpr std::string_view DELIVERY_SUFFIX = "-delivery.csv";
 constexpr std::string_view CLIENT_LOG_SUFFIX = "-client.log";
 constexpr std::string_view TIME_SERIES_SUFFIX = "-time-series.csv";
 constexpr std::string_view SNAPSHOT_OVERLAP_SUFFIX = "-snapshot-overlap.csv";
+constexpr std::string_view SOURCE_TIME_METHODS_SUFFIX = "-source-time-methods.csv";
 constexpr std::string_view NUMBER_PATTERN = R"([-+]?[0-9][0-9,]*(?:\.[0-9]+)?)";
 
 using Clock = std::chrono::system_clock;
@@ -81,6 +82,29 @@ struct LatencyRunRow {
     double maximumUs{};
     double outliers{};
     bool integrityOk{};
+};
+
+/** Contains one source-time selection method emitted by the full Graal client. */
+struct SourceTimeMethodRunRow {
+    std::string profile;
+    BenchmarkProfile identity;
+    std::string method;
+    std::string monotonicScope;
+    std::string timestampResolution;
+    double observations{};
+    double accepted{};
+    double rejected{};
+    double acceptanceRatio{};
+    double negativeClamped{};
+    double minimumUs{};
+    double meanUs{};
+    double p50Us{};
+    double p90Us{};
+    double p95Us{};
+    double p99Us{};
+    double p999Us{};
+    double maximumUs{};
+    double outliers{};
 };
 
 /** Contains one whole-run callback-delivery row emitted by a delivery-only client. */
@@ -809,6 +833,105 @@ std::expected<std::vector<LatencyRunRow>, std::string> readLatencyTotals(const s
     return rows;
 }
 
+/** Reads all source-time method rows produced by one full Graal client execution. */
+std::expected<std::vector<SourceTimeMethodRunRow>, std::string> readSourceTimeMethods(const std::filesystem::path &path,
+                                                                                      const std::string &profile) {
+    std::ifstream input{path};
+
+    if (!input) {
+        return std::unexpected(std::format("cannot read source-time methods: {}", path.string()));
+    }
+
+    std::string line;
+
+    if (!std::getline(input, line)) {
+        return std::unexpected(std::format("empty source-time methods file: {}", path.string()));
+    }
+
+    const auto headings = parseCsvRow(line);
+    const auto indexOf = [&](std::string_view name) -> std::optional<std::size_t> {
+        const auto found = std::ranges::find(headings, name);
+
+        return found == headings.end() ? std::nullopt
+                                       : std::optional{static_cast<std::size_t>(found - headings.begin())};
+    };
+    const auto methodIndex = indexOf("method");
+    const auto scopeIndex = indexOf("monotonic_scope");
+    const auto resolutionIndex = indexOf("timestamp_resolution");
+    const auto observationsIndex = indexOf("observations");
+    const auto acceptedIndex = indexOf("accepted");
+    const auto rejectedIndex = indexOf("rejected");
+    const auto acceptanceIndex = indexOf("acceptance_ratio");
+    const auto negativeIndex = indexOf("negative_clamped");
+    const auto minimumIndex = indexOf("min_us");
+    const auto meanIndex = indexOf("mean_us");
+    const auto p50Index = indexOf("p50_us");
+    const auto p90Index = indexOf("p90_us");
+    const auto p95Index = indexOf("p95_us");
+    const auto p99Index = indexOf("p99_us");
+    const auto p999Index = indexOf("p999_us");
+    const auto maximumIndex = indexOf("max_us");
+    const auto outliersIndex = indexOf("outliers");
+    const std::array required{methodIndex,   scopeIndex,      resolutionIndex, observationsIndex, acceptedIndex,
+                              rejectedIndex, acceptanceIndex, negativeIndex,   minimumIndex,      meanIndex,
+                              p50Index,      p90Index,        p95Index,        p99Index,          p999Index,
+                              maximumIndex,  outliersIndex};
+
+    if (std::ranges::any_of(required, [](const auto &index) {
+            return !index;
+        })) {
+        return std::unexpected(std::format("source-time methods file has no comparison columns: {}", path.string()));
+    }
+
+    const auto identity = parseBenchmarkProfile(profile);
+    std::vector<SourceTimeMethodRunRow> rows;
+
+    while (std::getline(input, line)) {
+        const auto columns = parseCsvRow(line);
+
+        if (columns.empty()) {
+            continue;
+        }
+
+        const auto number = [&](std::size_t index) -> std::expected<double, std::string> {
+            if (columns.size() <= index) {
+                return std::unexpected(std::format("missing source-time value in: {}", path.string()));
+            }
+
+            return parseNumber(columns[index]);
+        };
+        const std::array numericIndices{*observationsIndex, *acceptedIndex, *rejectedIndex, *acceptanceIndex,
+                                        *negativeIndex,     *minimumIndex,  *meanIndex,     *p50Index,
+                                        *p90Index,          *p95Index,      *p99Index,      *p999Index,
+                                        *maximumIndex,      *outliersIndex};
+        std::array<double, numericIndices.size()> values{};
+
+        for (std::size_t i = 0; i < numericIndices.size(); ++i) {
+            auto value = number(numericIndices[i]);
+
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+
+            values[i] = *value;
+        }
+
+        if (columns.size() <= std::max({*methodIndex, *scopeIndex, *resolutionIndex})) {
+            return std::unexpected(std::format("missing source-time label in: {}", path.string()));
+        }
+
+        rows.push_back({profile, identity, columns[*methodIndex], columns[*scopeIndex], columns[*resolutionIndex],
+                        values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7],
+                        values[8], values[9], values[10], values[11], values[12], values[13]});
+    }
+
+    if (rows.empty()) {
+        return std::unexpected(std::format("source-time methods file has no data rows: {}", path.string()));
+    }
+
+    return rows;
+}
+
 /** Reads the whole-run delivery counters produced by one delivery-only client execution. */
 std::expected<DeliveryRunRow, std::string> readDelivery(const std::filesystem::path &path, const std::string &profile) {
     std::ifstream input{path};
@@ -1430,11 +1553,26 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
     std::vector<LatencyRunRow> latencyRows;
     std::vector<DeliveryRunRow> deliveryRows;
     std::vector<ClientResourceRunRow> clientResourceRows;
+    std::vector<SourceTimeMethodRunRow> sourceTimeMethodRows;
     std::vector<TimeSeriesRunRow> timeSeriesRows;
     std::vector<SnapshotOverlapRunRow> snapshotOverlapRows;
 
     for (const auto &entry : std::filesystem::directory_iterator{runDirectory}) {
         const auto filename = entry.path().filename().string();
+
+        if (entry.is_regular_file() && filename.ends_with(SOURCE_TIME_METHODS_SUFFIX)) {
+            const auto profile = filename.substr(0, filename.size() - SOURCE_TIME_METHODS_SUFFIX.size());
+            auto rows = readSourceTimeMethods(entry.path(), profile);
+
+            if (!rows) {
+                return std::unexpected(rows.error());
+            }
+
+            sourceTimeMethodRows.insert(sourceTimeMethodRows.end(), std::make_move_iterator(rows->begin()),
+                                        std::make_move_iterator(rows->end()));
+
+            continue;
+        }
 
         if (entry.is_regular_file() && filename.ends_with(DELIVERY_SUFFIX)) {
             const auto profile = filename.substr(0, filename.size() - DELIVERY_SUFFIX.size());
@@ -1536,6 +1674,9 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
     });
     std::ranges::sort(clientResourceRows, {}, [](const ClientResourceRunRow &row) {
         return std::tuple{row.nominalEventsPerSecond, row.identity.scenario, row.identity.repetition};
+    });
+    std::ranges::sort(sourceTimeMethodRows, {}, [](const SourceTimeMethodRunRow &row) {
+        return std::tuple{row.identity.scenario, row.identity.repetition, row.method};
     });
     std::ranges::sort(timeSeriesRows, {}, [](const TimeSeriesRunRow &row) {
         return std::tuple{row.identity.scenario, row.identity.repetition};
@@ -1951,6 +2092,84 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
         writeComparisonRow(latencyComparison, row);
     }
 
+    std::ofstream sourceTimeMethodRuns;
+
+    if (auto opened = openOutput(sourceTimeMethodRuns, runDirectory / "source-time-method-runs.csv"); !opened) {
+        return opened;
+    }
+
+    sourceTimeMethodRuns << "\"profile\",\"scenario\",\"repetition\",\"method\",\"monotonic_scope\","
+                            "\"timestamp_resolution\",\"observations\",\"accepted\",\"rejected\","
+                            "\"acceptance_ratio\",\"negative_clamped\",\"min_us\",\"mean_us\",\"p50_us\","
+                            "\"p90_us\",\"p95_us\",\"p99_us\",\"p999_us\",\"max_us\",\"outliers\"\n";
+
+    for (const auto &row : sourceTimeMethodRows) {
+        writeColumn(sourceTimeMethodRuns, row.profile, true);
+        writeColumn(sourceTimeMethodRuns, row.identity.scenario);
+        writeColumn(sourceTimeMethodRuns, static_cast<double>(row.identity.repetition));
+        writeColumn(sourceTimeMethodRuns, row.method);
+        writeColumn(sourceTimeMethodRuns, row.monotonicScope);
+        writeColumn(sourceTimeMethodRuns, row.timestampResolution);
+        writeColumn(sourceTimeMethodRuns, row.observations);
+        writeColumn(sourceTimeMethodRuns, row.accepted);
+        writeColumn(sourceTimeMethodRuns, row.rejected);
+        writeColumn(sourceTimeMethodRuns, row.acceptanceRatio);
+        writeColumn(sourceTimeMethodRuns, row.negativeClamped);
+        writeColumn(sourceTimeMethodRuns, row.minimumUs);
+        writeColumn(sourceTimeMethodRuns, row.meanUs);
+        writeColumn(sourceTimeMethodRuns, row.p50Us);
+        writeColumn(sourceTimeMethodRuns, row.p90Us);
+        writeColumn(sourceTimeMethodRuns, row.p95Us);
+        writeColumn(sourceTimeMethodRuns, row.p99Us);
+        writeColumn(sourceTimeMethodRuns, row.p999Us);
+        writeColumn(sourceTimeMethodRuns, row.maximumUs);
+        writeColumn(sourceTimeMethodRuns, row.outliers);
+        sourceTimeMethodRuns << '\n';
+    }
+
+    /** Maps a report metric name to its source-time run member. */
+    struct SourceTimeMetric {
+        std::string_view name;
+        double SourceTimeMethodRunRow::*member;
+    };
+
+    constexpr std::array sourceTimeMetrics{
+        SourceTimeMetric{"observations", &SourceTimeMethodRunRow::observations},
+        SourceTimeMetric{"accepted", &SourceTimeMethodRunRow::accepted},
+        SourceTimeMetric{"rejected", &SourceTimeMethodRunRow::rejected},
+        SourceTimeMetric{"acceptance_ratio", &SourceTimeMethodRunRow::acceptanceRatio},
+        SourceTimeMetric{"p50_us", &SourceTimeMethodRunRow::p50Us},
+        SourceTimeMetric{"p99_us", &SourceTimeMethodRunRow::p99Us},
+        SourceTimeMetric{"p999_us", &SourceTimeMethodRunRow::p999Us},
+        SourceTimeMetric{"max_us", &SourceTimeMethodRunRow::maximumUs}};
+    std::map<std::pair<std::string, std::string>, std::vector<const SourceTimeMethodRunRow *>> sourceTimeGroups;
+
+    for (const auto &row : sourceTimeMethodRows) {
+        sourceTimeGroups[{row.identity.scenario, row.method}].push_back(&row);
+    }
+
+    std::ofstream sourceTimeMethodComparison;
+
+    if (auto opened = openOutput(sourceTimeMethodComparison, runDirectory / "source-time-method-comparison.csv");
+        !opened) {
+        return opened;
+    }
+
+    writeComparisonHeader(sourceTimeMethodComparison);
+
+    for (const auto &[key, rows] : sourceTimeGroups) {
+        for (const auto &metric : sourceTimeMetrics) {
+            std::vector<double> values;
+
+            for (const auto *row : rows) {
+                values.push_back(row->*(metric.member));
+            }
+
+            writeComparisonRow(sourceTimeMethodComparison,
+                               {key.first, key.second, std::string{metric.name}, compareRuns(std::move(values))});
+        }
+    }
+
     std::map<std::tuple<std::string, std::string, std::string>, std::vector<double>> monitoringGroups;
 
     for (const auto &aggregate : analysis.aggregates) {
@@ -1994,6 +2213,52 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
     }
 
     writeExperimentDefinition(report, *experiment);
+
+    if (!sourceTimeGroups.empty()) {
+        report << R"(## Source-time measurement methods
+
+Each method is applied to the same Trade and TradeETH callbacks at millisecond timestamp resolution. Values are
+medians across repetitions. `customer-global-strict` uses one last-seen timestamp across all event types and symbols;
+`per-series-strict` keeps independent state for each event-kind and symbol pair.
+
+| Scenario | Method | Runs | Observations | Accepted | Acceptance | p50 | p99 | p99.9 | Maximum |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+)";
+
+        for (const auto &[key, rows] : sourceTimeGroups) {
+            const auto collect = [&](double SourceTimeMethodRunRow::*member) {
+                std::vector<double> values;
+
+                for (const auto *row : rows) {
+                    values.push_back(row->*member);
+                }
+
+                return compareRuns(std::move(values));
+            };
+            const auto observations = collect(&SourceTimeMethodRunRow::observations);
+            const auto accepted = collect(&SourceTimeMethodRunRow::accepted);
+            const auto acceptance = collect(&SourceTimeMethodRunRow::acceptanceRatio);
+            const auto p50 = collect(&SourceTimeMethodRunRow::p50Us);
+            const auto p99 = collect(&SourceTimeMethodRunRow::p99Us);
+            const auto p999 = collect(&SourceTimeMethodRunRow::p999Us);
+            const auto maximum = collect(&SourceTimeMethodRunRow::maximumUs);
+
+            report << std::format("| {} | {} | {} | {:.0f} | {:.0f} | {:.4f}% | {:.3f} ms | {:.3f} ms | "
+                                  "{:.3f} ms | {:.3f} ms |\n",
+                                  key.first, key.second, rows.size(), observations.median, accepted.median,
+                                  acceptance.median * 100.0, p50.median / 1000.0, p99.median / 1000.0,
+                                  p999.median / 1000.0, maximum.median / 1000.0);
+        }
+
+        report << R"(
+
+The global strict filter is order-dependent and can retain at most one observation for a group of events carrying
+the same millisecond source timestamp. Its latency distribution therefore describes the surviving timestamp maxima,
+not the full Trade/TradeETH population. Compare its acceptance ratio with marker-correlated listener coverage before
+using its percentile values to assess API behavior.
+
+)";
+    }
 
     if (!deliveryScenarios.empty()) {
         report << R"(## Delivery-only client results
@@ -2295,7 +2560,8 @@ listener coverage. Because FEED does not preserve publication boundaries, listen
 are observations rather than integrity failures; STREAM_FEED still requires exact correlated delivery.
 )";
 
-    report << "\nGenerated files: `latency-runs.csv`, `latency-comparison.csv`, `client-resource-runs.csv`, "
+    report << "\nGenerated files: `latency-runs.csv`, `latency-comparison.csv`, `source-time-method-runs.csv`, "
+              "`source-time-method-comparison.csv`, `client-resource-runs.csv`, "
               "`client-resource-comparison.csv`, `time-series-runs.csv`, `time-series-comparison.csv`, "
               "`snapshot-overlap-runs.csv`, `snapshot-overlap-comparison.csv`, "
               "`delivery-runs.csv`, `delivery-comparison.csv`, `monitoring.csv`, `monitoring-summary.csv`, and "

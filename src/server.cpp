@@ -497,10 +497,12 @@ class Generator {
                     trade->setPrice(100.0 + active.tick % 100);
                     trade->setSize(1);
                     trade->setSequence(sequence);
+                    trade->setTimeNanos(nowNs);
                 } else if (auto tradeEth = event->sharedAs<TradeETH>()) {
                     tradeEth->setPrice(100.0 + active.tick % 100);
                     tradeEth->setSize(1);
                     tradeEth->setSequence(sequence);
+                    tradeEth->setTimeNanos(nowNs);
                 } else if (auto summary = event->sharedAs<Summary>()) {
                     summary->setDayId(sequence);
                     summary->setDayOpenPrice(99);

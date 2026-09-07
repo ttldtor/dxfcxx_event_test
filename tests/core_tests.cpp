@@ -233,6 +233,51 @@ TEST_CASE("statistics and benchmark profile comparison") {
     CHECK(comparison.maximum == 9);
 }
 
+TEST_CASE("source-time methods expose the customer's global timestamp selection") {
+    latency::SourceTimeMethodComparison comparison;
+    comparison.reserve(8, 4);
+
+    for (const auto sourceTime : {1'000LL, 1'010LL}) {
+        comparison.observe(latency::EventKind::TRADE, "SYM0", sourceTime, (sourceTime + 2) * 1'000'000);
+        comparison.observe(latency::EventKind::TRADE_ETH, "SYM0", sourceTime, (sourceTime + 3) * 1'000'000);
+        comparison.observe(latency::EventKind::TRADE, "SYM1", sourceTime, (sourceTime + 4) * 1'000'000);
+        comparison.observe(latency::EventKind::TRADE_ETH, "SYM1", sourceTime, (sourceTime + 5) * 1'000'000);
+    }
+
+    const auto snapshot = comparison.snapshot();
+
+    CHECK(snapshot.all.size() == 8);
+    CHECK(snapshot.perSeriesMonotonic.size() == 8);
+    CHECK(snapshot.perSeriesRejected == 0);
+    CHECK(snapshot.globalMonotonic.size() == 2);
+    CHECK(snapshot.globalRejected == 6);
+    CHECK(snapshot.globalMonotonic == std::vector<std::int64_t>{2'000'000, 2'000'000});
+}
+
+TEST_CASE("source-time method results depend on global arrival order and clamp negative latency") {
+    latency::SourceTimeMethodComparison ordered;
+    latency::SourceTimeMethodComparison reordered;
+
+    ordered.observe(latency::EventKind::TRADE, "SYM0", 1'000, 1'005'000'000);
+    ordered.observe(latency::EventKind::TRADE, "SYM1", 1'010, 1'015'000'000);
+    ordered.observe(latency::EventKind::TRADE, "SYM2", 1'005, 1'020'000'000);
+
+    reordered.observe(latency::EventKind::TRADE, "SYM1", 1'010, 1'015'000'000);
+    reordered.observe(latency::EventKind::TRADE, "SYM0", 1'000, 1'005'000'000);
+    reordered.observe(latency::EventKind::TRADE, "SYM2", 1'005, 1'020'000'000);
+    reordered.observe(latency::EventKind::TRADE, "SYM3", 1'020, 1'019'000'000);
+
+    const auto orderedSnapshot = ordered.snapshot();
+    const auto reorderedSnapshot = reordered.snapshot();
+
+    CHECK(orderedSnapshot.globalMonotonic.size() == 2);
+    CHECK(reorderedSnapshot.globalMonotonic.size() == 2);
+    CHECK(orderedSnapshot.globalMonotonic == std::vector<std::int64_t>{5'000'000, 5'000'000});
+    CHECK(reorderedSnapshot.globalMonotonic == std::vector<std::int64_t>{5'000'000, 0});
+    CHECK(reorderedSnapshot.globalRejected == 2);
+    CHECK(reorderedSnapshot.negativeClamped[2] == 1);
+}
+
 TEST_CASE("monitoring fixture analysis") {
     const auto analysis = analyzeMonitoringDirectory(FIXTURE_DIRECTORY, 10s);
 

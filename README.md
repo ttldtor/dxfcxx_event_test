@@ -190,6 +190,26 @@ The server must receive the same task directly because this client does not open
 The delivery-only client is a measurement control, not a replacement for `latency_client`: it reports delivery rate,
 callback shape, and resources but cannot report publisher-to-listener latency.
 
+### Customer source-time methodology control
+
+The full Graal client also writes `<prefix>-source-time-methods.csv` for Trade and TradeETH. All three rows are
+calculated online from the same listener callbacks at millisecond resolution:
+
+- `all-trade-events` retains every observation with a positive source timestamp;
+- `per-series-strict` retains an observation only when time advances for its event-kind and symbol pair;
+- `customer-global-strict` retains an observation only when time advances beyond one maximum shared by every Trade
+  and TradeETH symbol.
+
+The last row reproduces the decisive selection rule in the supplied customer test. It is not an alternative E2E
+clock: a global maximum across many instruments turns the result into an order-dependent sample of record timestamps.
+The server sets Trade and TradeETH source time to the publication time, while the existing TextMessage marker remains
+the higher-resolution, batch-correlated control.
+
+`tools/customer-methodology.conf` runs FEED with the optimal native batch limit, FEED with a one-event limit, and a
+non-conflating STREAM_FEED control against the same shuffled 150,000-events/s workload. It is intended to distinguish
+API delivery behavior from observations discarded by the measurement algorithm. The suite cannot recreate a
+production delay without a recorded stream or an explicitly injected fault.
+
 Set `LATENCY_BUILD_LEGACY_CLIENT=ON` to additionally build the legacy comparison path. CMake downloads the
 official pinned dxFeed C API 5.11.0 no-TLS binary SDK and exposes it through an imported target; it does not embed the
 upstream source project or manually copy its source lists. This optional target is supported only on 64-bit Windows
@@ -712,6 +732,10 @@ under `20260907T133807Z`, `20260907T135741Z`, and `20260907T134755Z`, respective
 The mostly idle subscription-cardinality comparison between Graal `STREAM_FEED` and legacy default delivery is in
 [`benchmark-results/20260907T145209Z/REPORT.md`](benchmark-results/20260907T145209Z/REPORT.md) and
 [`benchmark-results/INACTIVE-SUBSCRIPTION-CARDINALITY.md`](benchmark-results/INACTIVE-SUBSCRIPTION-CARDINALITY.md).
+The controlled reproduction of the customer's global source-time filter is in
+[`benchmark-results/20260907T160901Z/REPORT.md`](benchmark-results/20260907T160901Z/REPORT.md), with the complete
+methodology review and interpretation in
+[`benchmark-results/CUSTOMER-SOURCE-TIME-METHODOLOGY.md`](benchmark-results/CUSTOMER-SOURCE-TIME-METHODOLOGY.md).
 
 The legacy C API does not implement the newer client-side FEED conflation mechanism, delivers events to its callback
 one at a time, and does not support `TextMessage`, which the Graal benchmark uses as the exact per-publication

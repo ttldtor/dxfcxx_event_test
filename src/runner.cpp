@@ -559,7 +559,8 @@ std::expected<int, std::string> runAndWait(const std::filesystem::path &executab
 
 /// Renames incomplete client CSV files so the analyzer ignores them.
 void makePartial(const std::filesystem::path &prefix) {
-    for (const auto suffix : {"-summary.csv", "-outliers.csv", "-callbacks.csv", "-delivery.csv"}) {
+    for (const auto suffix :
+         {"-summary.csv", "-outliers.csv", "-callbacks.csv", "-source-time-methods.csv", "-delivery.csv"}) {
         auto source = prefix;
         source += suffix;
 

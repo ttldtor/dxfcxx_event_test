@@ -1,0 +1,4 @@
+method,monotonic_scope,timestamp_resolution,observations,accepted,rejected,acceptance_ratio,negative_clamped,min_us,mean_us,p50_us,p90_us,p95_us,p99_us,p999_us,max_us,outliers
+all-trade-events,none,milliseconds,2260500,2260500,0,1,0,1000,3211.13,3000,5000,5000,9000,17000,19000,32385
+per-series-strict,event-kind-and-symbol,milliseconds,2260500,2260500,0,1,0,1000,3211.13,3000,5000,5000,9000,17000,19000,32385
+customer-global-strict,all-trade-and-trade-eth,milliseconds,2260500,3016,2257484,0.00133422,0,1000,2571.29,2000,4000,4000,7850,15985,18000,109

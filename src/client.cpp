@@ -300,6 +300,7 @@ class Collector {
     mutable std::mutex mutex_;
     std::condition_variable profilesCv_;
     bool measuring_{};
+    bool sourceTimeMeasuring_{};
     bool acceptingNewBatches_{};
     std::unordered_set<std::int32_t> preMeasurementSequences_;
     std::vector<latency::Sample> eventWindow_, batchWindow_;
@@ -313,16 +314,24 @@ class Collector {
     std::unordered_set<std::string> profileSymbolsReceived_;
     std::size_t activity_{};
     DeliveryCounters deliveryWindow_, deliveryTotal_;
+    latency::SourceTimeMethodComparison sourceTimeMethods_;
 
     /** Identifies the correlation fields extracted from one supported market event. */
     struct Description {
+        /** Event type used by marker correlation and source-time series keys. */
         latency::EventKind kind;
+
+        /** Event symbol used by marker correlation and per-series source-time filtering. */
         std::string symbol;
+
+        /** Synthetic publication sequence encoded in the event. */
         std::optional<std::int32_t> sequence;
-        std::optional<std::int64_t> publishTime;
+
+        /** Native Trade/TradeETH source timestamp in Unix milliseconds, when available. */
+        std::optional<std::int64_t> sourceTimeMs;
     };
 
-    // Extract the wire fields used to associate each supported event type with a published batch.
+    /** Extracts wire fields used to associate one supported market event with a published batch. */
     static std::optional<Description> describe(const std::shared_ptr<EventType> &event) {
         if (auto value = event->sharedAs<Quote>()) {
             const auto encodedSequence = value->getBidSize();
@@ -338,12 +347,13 @@ class Collector {
         }
 
         if (auto value = event->sharedAs<Trade>()) {
-            return Description{latency::EventKind::TRADE, value->getEventSymbol(), value->getSequence(), std::nullopt};
+            return Description{latency::EventKind::TRADE, value->getEventSymbol(), value->getSequence(),
+                               value->getTime()};
         }
 
         if (auto value = event->sharedAs<TradeETH>()) {
             return Description{latency::EventKind::TRADE_ETH, value->getEventSymbol(), value->getSequence(),
-                               std::nullopt};
+                               value->getTime()};
         }
 
         if (auto value = event->sharedAs<Summary>()) {
@@ -594,7 +604,12 @@ class Collector {
                 continue;
             }
 
-            PendingEvent pendingEvent{observed, description->publishTime, description->kind,
+            if (sourceTimeMeasuring_ && description->sourceTimeMs) {
+                sourceTimeMethods_.observe(description->kind, description->symbol, *description->sourceTimeMs,
+                                           observed);
+            }
+
+            PendingEvent pendingEvent{observed, description->sourceTimeMs, description->kind,
                                       std::move(description->symbol)};
 
             if (description->sequence) {
@@ -650,6 +665,9 @@ class Collector {
 
         /** Whole-run delivery accounting. */
         DeliveryCounters delivery;
+
+        /** Trade/TradeETH source-time samples selected by the three comparison methods. */
+        latency::SourceTimeMethodSnapshot sourceTimeMethods;
     };
 
     /** Creates a collector and reserves storage for the expected workload. */
@@ -677,6 +695,10 @@ class Collector {
         }
 
         batchGlobal_.reserve(reserveBatches);
+        const auto tradeEvents = pattern.quantity(latency::EventKind::TRADE).value_or(0) +
+                                 pattern.quantity(latency::EventKind::TRADE_ETH).value_or(0);
+
+        sourceTimeMethods_.reserve(tradeEvents * reserveBatches, tradeEvents);
     }
 
     /** Clears window state and begins accepting measurement batches. */
@@ -689,7 +711,9 @@ class Collector {
         pending_.clear();
         callbacksWindow_ = negativeWindow_ = missingWindow_ = 0;
         deliveryWindow_ = {};
+        sourceTimeMethods_.reset();
         acceptingNewBatches_ = true;
+        sourceTimeMeasuring_ = true;
         measuring_ = true;
     }
 
@@ -697,6 +721,7 @@ class Collector {
     void endMeasurement() {
         std::lock_guard lock{mutex_};
         acceptingNewBatches_ = false;
+        sourceTimeMeasuring_ = false;
     }
 
     /** Handles control-marker and initial-profile events. */
@@ -758,9 +783,17 @@ class Collector {
     Totals totals() const {
         std::lock_guard lock{mutex_};
 
-        return Totals{
-            eventGlobalByKind_, batchGlobal_,  callbackSizeGlobal_, callbackDurationGlobal_,        callbacksTotal_,
-            negativeTotal_,     missingTotal_, pending_.size(),     profileSymbolsReceived_.size(), deliveryTotal_};
+        return Totals{eventGlobalByKind_,
+                      batchGlobal_,
+                      callbackSizeGlobal_,
+                      callbackDurationGlobal_,
+                      callbacksTotal_,
+                      negativeTotal_,
+                      missingTotal_,
+                      pending_.size(),
+                      profileSymbolsReceived_.size(),
+                      deliveryTotal_,
+                      sourceTimeMethods_.snapshot()};
     }
 
     /** Waits until all expected initial Profile symbols arrive or the timeout expires. */
@@ -1024,7 +1057,7 @@ class TimeSeriesTracker {
 
 /** Writes per-window and whole-run statistics while retaining detailed rows only for outliers. */
 class Reporter {
-    std::ofstream summary_, outliers_, callbacks_, snapshotOverlap_;
+    std::ofstream summary_, outliers_, callbacks_, snapshotOverlap_, sourceTimeMethods_;
     std::int64_t runStart_{};
     std::size_t expectedEventsPerBatch_{};
     std::int64_t publishPeriodMs_{};
@@ -1194,6 +1227,26 @@ class Reporter {
         }
     }
 
+    /** Writes statistics for one source-time selection method to CSV and the console. */
+    void writeSourceTimeMethod(std::string_view method, std::string_view scope, std::size_t observations,
+                               const std::vector<std::int64_t> &latencies, std::size_t rejected,
+                               std::size_t negativeClamped) {
+        const auto statistics = latency::calculateStatistics(latencies);
+        const auto acceptance = observations ? static_cast<double>(latencies.size()) / observations : 0.0;
+
+        sourceTimeMethods_ << method << ',' << scope << ",milliseconds," << observations << ',' << latencies.size()
+                           << ',' << rejected << ',' << acceptance << ',' << negativeClamped << ','
+                           << microseconds(statistics.minimum) << ',' << microseconds(statistics.mean) << ','
+                           << microseconds(statistics.p50) << ',' << microseconds(statistics.p90) << ','
+                           << microseconds(statistics.p95) << ',' << microseconds(statistics.p99) << ','
+                           << microseconds(statistics.p999) << ',' << microseconds(statistics.maximum) << ','
+                           << statistics.outlierCount << '\n';
+        std::cout << std::format("Source-time method {} accepted {}/{} ({:.3f}%), rejected={}, "
+                                 "negative-clamped={}\n",
+                                 method, latencies.size(), observations, acceptance * 100.0, rejected, negativeClamped);
+        printStats(method, statistics);
+    }
+
     public:
     /** Opens all report files together so a run cannot proceed with only some outputs available. */
     Reporter(const std::filesystem::path &prefix, const latency::TaskPattern &pattern, ClientRole role,
@@ -1216,6 +1269,8 @@ class Reporter {
         callbacksPath += "-callbacks.csv";
         auto snapshotOverlapPath = prefix;
         snapshotOverlapPath += "-snapshot-overlap.csv";
+        auto sourceTimeMethodsPath = prefix;
+        sourceTimeMethodsPath += "-source-time-methods.csv";
 
         if (summaryPath.has_parent_path()) {
             std::filesystem::create_directories(summaryPath.parent_path());
@@ -1224,12 +1279,13 @@ class Reporter {
         summary_.open(summaryPath);
         outliers_.open(outliersPath);
         callbacks_.open(callbacksPath);
+        sourceTimeMethods_.open(sourceTimeMethodsPath);
 
         if (snapshotOverlap) {
             snapshotOverlap_.open(snapshotOverlapPath);
         }
 
-        if (!summary_ || !outliers_ || !callbacks_ || (snapshotOverlap && !snapshotOverlap_)) {
+        if (!summary_ || !outliers_ || !callbacks_ || !sourceTimeMethods_ || (snapshotOverlap && !snapshotOverlap_)) {
             throw std::runtime_error("cannot open output CSV files");
         }
 
@@ -1246,6 +1302,9 @@ class Reporter {
         outliers_ << "observed_at_utc,sample_kind,event_type,symbol,publish_time_ns,latency_ns,window_threshold_ns\n";
         callbacks_ << "window_start_utc,window_end_utc,sample_kind,unit,samples,min,mean,p50,p90,p95,p99,p999,max,"
                       "q1,q3,iqr,outlier_threshold,outliers\n";
+        sourceTimeMethods_ << "method,monotonic_scope,timestamp_resolution,observations,accepted,rejected,"
+                              "acceptance_ratio,negative_clamped,min_us,mean_us,p50_us,p90_us,p95_us,p99_us,"
+                              "p999_us,max_us,outliers\n";
 
         if (snapshotOverlap_) {
             snapshotOverlap_ << "phase,phase_start_utc,phase_end_utc,duration_ms,sample_kind,samples,published,"
@@ -1255,8 +1314,8 @@ class Reporter {
                                 "rss_maximum_bytes,resource_samples\n";
         }
 
-        std::cout << std::format("Writing {}, {}, {}{}\n", summaryPath.string(), outliersPath.string(),
-                                 callbacksPath.string(),
+        std::cout << std::format("Writing {}, {}, {}, {}{}\n", summaryPath.string(), outliersPath.string(),
+                                 callbacksPath.string(), sourceTimeMethodsPath.string(),
                                  snapshotOverlap ? std::format(", and {}", snapshotOverlapPath.string()) : "");
     }
 
@@ -1371,6 +1430,16 @@ class Reporter {
                      totals.pending, deliveryView(totals.delivery));
         writeCallbackSummary(runStart_, end, "market-callback-size-total", "events", callbackSizeStats);
         writeCallbackSummary(runStart_, end, "market-callback-duration-total", "us", callbackDurationStats, 1'000.0);
+        const auto sourceObservations = totals.sourceTimeMethods.all.size();
+
+        writeSourceTimeMethod("all-trade-events", "none", sourceObservations, totals.sourceTimeMethods.all, 0,
+                              totals.sourceTimeMethods.negativeClamped[0]);
+        writeSourceTimeMethod("per-series-strict", "event-kind-and-symbol", sourceObservations,
+                              totals.sourceTimeMethods.perSeriesMonotonic, totals.sourceTimeMethods.perSeriesRejected,
+                              totals.sourceTimeMethods.negativeClamped[1]);
+        writeSourceTimeMethod("customer-global-strict", "all-trade-and-trade-eth", sourceObservations,
+                              totals.sourceTimeMethods.globalMonotonic, totals.sourceTimeMethods.globalRejected,
+                              totals.sourceTimeMethods.negativeClamped[2]);
         std::cout << std::format("Initial Profile events received={}/{}\n", totals.profilesReceived,
                                  initialProfilesExpected_);
     }
