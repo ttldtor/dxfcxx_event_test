@@ -78,15 +78,20 @@ jobs:
 
   linux-container:
     name: Linux container / ${{ matrix.platform }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        platform: [linux/amd64, linux/arm64]
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            image_tag: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            image_tag: arm64
 
     steps:
       - uses: actions/checkout@v6
-      - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - name: Build image
         uses: docker/build-push-action@v7
@@ -94,12 +99,12 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           load: true
-          tags: latency-test:${{ strategy.job-index }}
+          tags: latency-test:${{ matrix.image_tag }}
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
       - name: Smoke-test commands
         run: |
-          docker run --rm latency-test:${{ strategy.job-index }} sh -ec '
+          docker run --rm latency-test:${{ matrix.image_tag }} sh -ec '
             for binary in latency_server latency_client latency_analyzer latency_runner; do
               dependencies="$(ldd "/opt/latency/bin/$binary")"
               printf "%s\n" "$dependencies"
@@ -108,14 +113,24 @@ jobs:
                 "libstdc++.so.6 => /opt/gcc-runtime/libstdc++.so.6"
             done
           '
-          docker run --rm latency-test:${{ strategy.job-index }} latency_server --help
-          docker run --rm latency-test:${{ strategy.job-index }} latency_client --help
-          docker run --rm latency-test:${{ strategy.job-index }} latency_analyzer --help
-          docker run --rm latency-test:${{ strategy.job-index }} latency_runner --help
+          docker run --rm latency-test:${{ matrix.image_tag }} latency_server --help
+          docker run --rm latency-test:${{ matrix.image_tag }} latency_client --help
+          docker run --rm latency-test:${{ matrix.image_tag }} latency_analyzer --help
+          docker run --rm latency-test:${{ matrix.image_tag }} latency_runner --help
 
   linux-container-end-to-end:
-    name: Linux container / end-to-end
-    runs-on: ubuntu-24.04
+    name: Linux container / ${{ matrix.platform }} / end-to-end
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            artifact_suffix: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            artifact_suffix: arm64
 
     steps:
       - uses: actions/checkout@v6
@@ -245,6 +260,7 @@ jobs:
           {
             echo '## Linux container end-to-end'
             echo
+            echo '- Platform: `${{ matrix.platform }}`'
             echo "- Status: **$TEST_STATUS**"
             echo '- Task: `SUB:Q100;T100;E100;S100;N100@10ms#100~22805`; role: `feed`'
             echo '- Time-series prefill: `500ms`; warm-up: `2s`; measurement: `3s`; window: `1s`'
@@ -258,7 +274,7 @@ jobs:
         id: e2e_artifact
         uses: actions/upload-artifact@v7
         with:
-          name: linux-end-to-end-results
+          name: linux-${{ matrix.artifact_suffix }}-end-to-end-results
           path: ${{ runner.temp }}/latency-output
           if-no-files-found: warn
       - name: Add artifact link to summary
