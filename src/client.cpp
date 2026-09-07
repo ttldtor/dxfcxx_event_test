@@ -104,6 +104,7 @@ struct Config {
     std::string task{"SUB:Q100"};
     std::chrono::milliseconds warmup{30s}, duration{5min}, window{10s}, batchTimeout{30s}, startupTimeout{30s};
     std::chrono::milliseconds timeSeriesPrefill{2s};
+    std::optional<std::chrono::milliseconds> timeSeriesSubscribeAfter;
     std::chrono::milliseconds listenerDelay{};
     std::chrono::milliseconds aggregationPeriod{};
     std::optional<std::chrono::milliseconds> monitoringStat{10s};
@@ -165,6 +166,8 @@ Config parseArgs(int argc, char **argv) {
   --window 10s             --batch-timeout 30s
   --startup-timeout 30s    initial Profile delivery timeout
   --time-series-prefill 2s retain live TimeAndSale events before subscribing
+  --time-series-subscribe-after 10s
+                           add TimeAndSale during measurement after this delay
   --listener-delay 1ms     delay each market-event callback; default 0
   --aggregation-period 1ms aggregate market notifications; default 0
   --events-batch-limit N   optimal, maximum, or a positive integer; default optimal
@@ -228,6 +231,8 @@ Config parseArgs(int argc, char **argv) {
                 config.startupTimeout = *duration;
             } else if (arg == "--time-series-prefill") {
                 config.timeSeriesPrefill = *duration;
+            } else if (arg == "--time-series-subscribe-after") {
+                config.timeSeriesSubscribeAfter = *duration;
             } else if (arg == "--listener-delay") {
                 config.listenerDelay = *duration;
             } else if (arg == "--aggregation-period") {
@@ -921,6 +926,20 @@ class TimeSeriesTracker {
         return completedSymbols_ >= expectedSymbols_;
     }
 
+    /** Returns whether every requested symbol has completed its initial snapshot. */
+    bool snapshotComplete() const {
+        std::lock_guard lock{mutex_};
+
+        return expectedSymbols_ > 0 && completedSymbols_ >= expectedSymbols_;
+    }
+
+    /** Returns the wall-clock completion time of the last requested symbol snapshot. */
+    std::int64_t snapshotCompletedAtNs() const {
+        std::lock_guard lock{mutex_};
+
+        return completedAtNs_;
+    }
+
     /** Begins collecting steady-state live TimeAndSale latency samples. */
     void beginMeasurement() {
         std::lock_guard lock{mutex_};
@@ -990,7 +1009,7 @@ class TimeSeriesTracker {
 
 /** Writes per-window and whole-run statistics while retaining detailed rows only for outliers. */
 class Reporter {
-    std::ofstream summary_, outliers_, callbacks_;
+    std::ofstream summary_, outliers_, callbacks_, snapshotOverlap_;
     std::int64_t runStart_{};
     std::size_t expectedEventsPerBatch_{};
     std::int64_t publishPeriodMs_{};
@@ -1120,6 +1139,30 @@ class Reporter {
                    << value(statistics.outlierThreshold) << ',' << statistics.outlierCount << '\n';
     }
 
+    void writeSnapshotOverlap(std::string_view phase, std::int64_t start, std::int64_t end, std::string_view kind,
+                              const latency::Statistics &statistics, std::size_t callbacks, std::size_t negative,
+                              std::size_t missing, std::size_t pending, const DeliveryView &delivery,
+                              const latency::ResourceStatistics &resources) {
+        if (!snapshotOverlap_) {
+            return;
+        }
+
+        const auto listenerCoverage =
+            delivery.published ? static_cast<double>(delivery.delivered) / delivery.published : 0.0;
+        const auto durationMs = static_cast<double>(end - start) / 1'000'000.0;
+
+        snapshotOverlap_ << phase << ',' << latency::utcTimestamp(start) << ',' << latency::utcTimestamp(end) << ','
+                         << durationMs << ',' << kind << ',' << statistics.count << ',' << delivery.published << ','
+                         << delivery.delivered << ',' << delivery.listenerDeficit << ',' << listenerCoverage << ','
+                         << delivery.excess << ',' << callbacks << ',' << negative << ',' << missing << ',' << pending
+                         << ',' << microseconds(statistics.minimum) << ',' << microseconds(statistics.mean) << ','
+                         << microseconds(statistics.p50) << ',' << microseconds(statistics.p90) << ','
+                         << microseconds(statistics.p95) << ',' << microseconds(statistics.p99) << ','
+                         << microseconds(statistics.p999) << ',' << microseconds(statistics.maximum) << ','
+                         << resources.cpuCorePercent << ',' << resources.cpuHostPercent << ',' << resources.rssMeanBytes
+                         << ',' << resources.rssMaximumBytes << ',' << resources.samples << '\n';
+    }
+
     void writeOutliers(const std::vector<latency::Sample> &samples, std::string_view kind,
                        const latency::Statistics &stats, std::optional<latency::EventKind> eventKind = std::nullopt) {
         for (const auto &sample : samples) {
@@ -1139,7 +1182,7 @@ class Reporter {
     public:
     /** Opens all report files together so a run cannot proceed with only some outputs available. */
     Reporter(const std::filesystem::path &prefix, const latency::TaskPattern &pattern, ClientRole role,
-             std::int32_t eventsBatchLimit, std::int64_t aggregationPeriodMs)
+             std::int32_t eventsBatchLimit, std::int64_t aggregationPeriodMs, bool snapshotOverlap)
         : runStart_(latency::unixNanosNow()), expectedEventsPerBatch_(regularEventCount(pattern)),
           publishPeriodMs_(pattern.publishPeriod.count()),
           nominalEventsPerSecond_(static_cast<double>(regularEventCount(pattern)) * 1'000.0 /
@@ -1156,6 +1199,8 @@ class Reporter {
         outliersPath += "-outliers.csv";
         auto callbacksPath = prefix;
         callbacksPath += "-callbacks.csv";
+        auto snapshotOverlapPath = prefix;
+        snapshotOverlapPath += "-snapshot-overlap.csv";
 
         if (summaryPath.has_parent_path()) {
             std::filesystem::create_directories(summaryPath.parent_path());
@@ -1165,7 +1210,11 @@ class Reporter {
         outliers_.open(outliersPath);
         callbacks_.open(callbacksPath);
 
-        if (!summary_ || !outliers_ || !callbacks_) {
+        if (snapshotOverlap) {
+            snapshotOverlap_.open(snapshotOverlapPath);
+        }
+
+        if (!summary_ || !outliers_ || !callbacks_ || (snapshotOverlap && !snapshotOverlap_)) {
             throw std::runtime_error("cannot open output CSV files");
         }
 
@@ -1182,8 +1231,18 @@ class Reporter {
         outliers_ << "observed_at_utc,sample_kind,event_type,symbol,publish_time_ns,latency_ns,window_threshold_ns\n";
         callbacks_ << "window_start_utc,window_end_utc,sample_kind,unit,samples,min,mean,p50,p90,p95,p99,p999,max,"
                       "q1,q3,iqr,outlier_threshold,outliers\n";
-        std::cout << std::format("Writing {}, {}, and {}\n", summaryPath.string(), outliersPath.string(),
-                                 callbacksPath.string());
+
+        if (snapshotOverlap_) {
+            snapshotOverlap_ << "phase,phase_start_utc,phase_end_utc,duration_ms,sample_kind,samples,published,"
+                                "delivered,listener_deficit,listener_coverage,excess_events,callbacks,"
+                                "clock_anomalies,missing_batches,pending_batches,min_us,mean_us,p50_us,p90_us,"
+                                "p95_us,p99_us,p999_us,max_us,cpu_core_percent,cpu_host_percent,rss_mean_bytes,"
+                                "rss_maximum_bytes,resource_samples\n";
+        }
+
+        std::cout << std::format("Writing {}, {}, {}{}\n", summaryPath.string(), outliersPath.string(),
+                                 callbacksPath.string(),
+                                 snapshotOverlap ? std::format(", and {}", snapshotOverlapPath.string()) : "");
     }
 
     /** Changes the whole-run start boundary after warm-up completes. */
@@ -1192,7 +1251,9 @@ class Reporter {
     }
 
     /** Calculates and writes all statistics for one measurement window. */
-    void window(Collector::Window data, std::int64_t start, std::int64_t end) {
+    void window(Collector::Window data, std::int64_t start, std::int64_t end,
+                std::optional<std::string_view> snapshotPhase = std::nullopt,
+                const latency::ResourceStatistics &resources = {}) {
         ++windowIndex_;
         const auto eventStats = latency::calculateStatistics(latencies(data.events));
         const auto batchStats = latency::calculateStatistics(latencies(data.batches));
@@ -1216,6 +1277,11 @@ class Reporter {
         writeSummary(start, end, "event", eventStats, expectedEventsPerBatch_, data.callbacks, data.negative,
                      data.missing, data.pending, deliveryView(data.delivery));
 
+        if (snapshotPhase) {
+            writeSnapshotOverlap(*snapshotPhase, start, end, "event", eventStats, data.callbacks, data.negative,
+                                 data.missing, data.pending, deliveryView(data.delivery), resources);
+        }
+
         for (const auto kind : EVENT_KINDS) {
             const auto sampleKind = eventSampleKind(kind);
             const auto stats = latency::calculateStatistics(latencies(data.events, kind));
@@ -1223,18 +1289,34 @@ class Reporter {
             printStats(sampleKind, stats);
             writeSummary(start, end, sampleKind, stats, expectedEventsByKind_[eventKindIndex(kind)], data.callbacks,
                          data.negative, data.missing, data.pending, deliveryView(data.delivery, kind));
+
+            if (snapshotPhase) {
+                writeSnapshotOverlap(*snapshotPhase, start, end, sampleKind, stats, data.callbacks, data.negative,
+                                     data.missing, data.pending, deliveryView(data.delivery, kind), resources);
+            }
+
             writeOutliers(data.events, sampleKind, stats, kind);
         }
 
         printStats("batch", batchStats);
         writeSummary(start, end, "batch", batchStats, 1, data.callbacks, data.negative, data.missing, data.pending,
                      deliveryView(data.delivery));
+
+        if (snapshotPhase) {
+            writeSnapshotOverlap(*snapshotPhase, start, end, "batch", batchStats, data.callbacks, data.negative,
+                                 data.missing, data.pending, deliveryView(data.delivery), resources);
+        }
+
         writeOutliers(data.batches, "batch", batchStats);
         writeCallbackSummary(start, end, "market-callback-size", "events", callbackSizeStats);
         writeCallbackSummary(start, end, "market-callback-duration", "us", callbackDurationStats, 1'000.0);
         summary_.flush();
         outliers_.flush();
         callbacks_.flush();
+
+        if (snapshotOverlap_) {
+            snapshotOverlap_.flush();
+        }
     }
 
     /** Calculates and writes the final whole-run statistics. */
@@ -1308,6 +1390,16 @@ int main(int argc, char **argv) {
             throw std::invalid_argument("TimeAndSale time-series workloads require --role feed");
         }
 
+        const auto hasTimeSeries = pattern->quantity(latency::EventKind::TIME_AND_SALE).value_or(0) > 0;
+
+        if (config.timeSeriesSubscribeAfter && !hasTimeSeries) {
+            throw std::invalid_argument("--time-series-subscribe-after requires a TimeAndSale workload");
+        }
+
+        if (config.timeSeriesSubscribeAfter && *config.timeSeriesSubscribeAfter >= config.duration) {
+            throw std::invalid_argument("--time-series-subscribe-after must be shorter than --duration");
+        }
+
         const auto expected = regularEventCount(*pattern);
         const auto windowBatches = std::max<std::size_t>(1, pattern->batchCount(config.window));
         const auto runBatches = std::max<std::size_t>(1, pattern->batchCount(config.duration));
@@ -1348,8 +1440,8 @@ int main(int argc, char **argv) {
 
         std::shared_ptr<DXFeedTimeSeriesSubscription> timeSeriesSubscription;
 
-        if (pattern->quantity(latency::EventKind::TIME_AND_SALE).value_or(0)) {
-            timeSeriesSubscription = feed->createTimeSeriesSubscription(TimeAndSale::TYPE);
+        if (hasTimeSeries) {
+            timeSeriesSubscription = feed->createTimeSeriesSubscription(std::vector{TimeAndSale::TYPE});
             timeSeriesSubscription->setAggregationPeriod(config.aggregationPeriod);
             timeSeriesSubscription->setEventsBatchLimit(config.eventsBatchLimit);
             timeSeriesSubscription->addEventListener([&timeSeriesTracker](const auto &events) {
@@ -1376,8 +1468,12 @@ int main(int argc, char **argv) {
                                                       : timeSeriesSubscription->getAggregationPeriod().getTime();
         const auto effectiveEventsBatchLimit =
             subscription ? subscription->getEventsBatchLimit() : timeSeriesSubscription->getEventsBatchLimit();
-        Reporter reporter{config.output, *pattern, config.role, effectiveEventsBatchLimit,
-                          effectiveAggregationPeriodMs};
+        Reporter reporter{config.output,
+                          *pattern,
+                          config.role,
+                          effectiveEventsBatchLimit,
+                          effectiveAggregationPeriodMs,
+                          config.timeSeriesSubscribeAfter.has_value()};
 
         endpoint->connect(config.address);
         std::cout << std::format("Connected to {} using {}, task {}, expected {} events/batch every {} ms "
@@ -1409,7 +1505,7 @@ int main(int argc, char **argv) {
 
         std::int64_t timeSeriesFromTimeMs{};
 
-        if (timeSeriesSubscription) {
+        if (timeSeriesSubscription && !config.timeSeriesSubscribeAfter) {
             timeSeriesFromTimeMs = latency::unixNanosNow() / 1'000'000;
             std::cout << std::format("Initial Profile setup complete: {}/{}. Retaining TimeAndSale history for {} "
                                      "ms before subscribing {} symbols.\n",
@@ -1458,25 +1554,111 @@ int main(int argc, char **argv) {
         latency::ResourceSampler resources;
         auto windowStartWall = latency::unixNanosNow();
         reporter.beginMeasurement(windowStartWall);
-        auto nextWindow = measurementStart + config.window;
         const auto measurementEnd = measurementStart + config.duration;
+        bool snapshotTimedOut{};
 
-        while (!interrupted.load() && std::chrono::steady_clock::now() < measurementEnd) {
-            const auto target = std::min(nextWindow, measurementEnd);
-            const auto remaining =
-                std::chrono::duration_cast<std::chrono::milliseconds>(target - std::chrono::steady_clock::now());
+        if (config.timeSeriesSubscribeAfter) {
+            enum class SnapshotPhase { BEFORE, DURING, AFTER };
 
-            if (remaining > 0ms) {
-                waitFor(std::min(remaining, 100ms));
+            auto phase = SnapshotPhase::BEFORE;
+            auto phaseStart = measurementStart;
+            auto phaseStartWall = windowStartWall;
+            auto phaseResources = std::make_unique<latency::ResourceSampler>();
+            auto nextResourceSample = measurementStart + 100ms;
+            const auto subscribeAt = measurementStart + *config.timeSeriesSubscribeAfter;
+            auto snapshotDeadline = std::chrono::steady_clock::time_point::max();
+            const auto flushPhase = [&](std::string_view name, std::chrono::steady_clock::time_point end,
+                                        std::int64_t endWall) {
+                resources.sample();
+                phaseResources->sample();
+                const auto phaseStatistics =
+                    phaseResources->finish(std::chrono::duration<double>(end - phaseStart).count());
+
+                reporter.window(collector.takeWindow(), phaseStartWall, endWall, name, phaseStatistics);
+                phaseStart = end;
+                phaseStartWall = endWall;
+                windowStartWall = endWall;
+                phaseResources = std::make_unique<latency::ResourceSampler>();
+            };
+
+            while (!interrupted.load() && std::chrono::steady_clock::now() < measurementEnd) {
+                const auto now = std::chrono::steady_clock::now();
+
+                if (phase == SnapshotPhase::BEFORE && now >= subscribeAt) {
+                    const auto subscribedAtWall = latency::unixNanosNow();
+
+                    flushPhase("before", now, subscribedAtWall);
+                    timeSeriesFromTimeMs =
+                        (subscribedAtWall - config.timeSeriesPrefill.count() * 1'000'000) / 1'000'000;
+                    timeSeriesTracker.beginSnapshot(pattern->symbolCount(), subscribedAtWall);
+                    timeSeriesSubscription->setFromTime(timeSeriesFromTimeMs);
+                    timeSeriesSubscription->addSymbols(pattern->symbols());
+                    snapshotDeadline = now + config.startupTimeout;
+                    phase = SnapshotPhase::DURING;
+                    nextResourceSample = now + 10ms;
+                    std::cout << std::format("Added TimeAndSale HISTORY subscription {} ms after measurement start: "
+                                             "symbols={} from-time={} ({} ms retained range).\n",
+                                             config.timeSeriesSubscribeAfter->count(), pattern->symbolCount(),
+                                             timeSeriesFromTimeMs, config.timeSeriesPrefill.count())
+                              << std::flush;
+
+                    continue;
+                }
+
+                if (phase == SnapshotPhase::DURING && timeSeriesTracker.snapshotComplete()) {
+                    const auto completedAtWall = timeSeriesTracker.snapshotCompletedAtNs();
+
+                    flushPhase("during", now, completedAtWall);
+                    phase = SnapshotPhase::AFTER;
+                    nextResourceSample = now + 100ms;
+                    std::cout << "TimeAndSale HISTORY snapshot completed; continuing post-snapshot measurement.\n"
+                              << std::flush;
+
+                    continue;
+                }
+
+                if (phase == SnapshotPhase::DURING && now >= snapshotDeadline) {
+                    snapshotTimedOut = true;
+                    break;
+                }
+
+                if (now >= nextResourceSample) {
+                    resources.sample();
+                    phaseResources->sample();
+                    nextResourceSample += phase == SnapshotPhase::DURING ? 10ms : 100ms;
+                }
+
+                const auto pause = phase == SnapshotPhase::DURING ? 10ms : 100ms;
+                waitFor(std::min(pause, std::chrono::duration_cast<std::chrono::milliseconds>(measurementEnd - now)));
             }
 
-            resources.sample();
+            const auto phaseEnd = std::chrono::steady_clock::now();
+            const auto phaseEndWall = latency::unixNanosNow();
+            const auto phaseName = phase == SnapshotPhase::BEFORE   ? "before"
+                                   : phase == SnapshotPhase::DURING ? "during"
+                                                                    : "after";
 
-            if (std::chrono::steady_clock::now() >= target) {
-                const auto endWall = latency::unixNanosNow();
-                reporter.window(collector.takeWindow(), windowStartWall, endWall);
-                windowStartWall = endWall;
-                nextWindow += config.window;
+            flushPhase(phaseName, phaseEnd, phaseEndWall);
+        } else {
+            auto nextWindow = measurementStart + config.window;
+
+            while (!interrupted.load() && std::chrono::steady_clock::now() < measurementEnd) {
+                const auto target = std::min(nextWindow, measurementEnd);
+                const auto remaining =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(target - std::chrono::steady_clock::now());
+
+                if (remaining > 0ms) {
+                    waitFor(std::min(remaining, 100ms));
+                }
+
+                resources.sample();
+
+                if (std::chrono::steady_clock::now() >= target) {
+                    const auto endWall = latency::unixNanosNow();
+                    reporter.window(collector.takeWindow(), windowStartWall, endWall);
+                    windowStartWall = endWall;
+                    nextWindow += config.window;
+                }
             }
         }
 
@@ -1484,6 +1666,11 @@ int main(int argc, char **argv) {
         resources.sample();
         const auto resourceStatistics =
             resources.finish(std::chrono::duration<double>(measurementFinish - measurementStart).count());
+
+        if (snapshotTimedOut) {
+            std::cerr << std::format("TimeAndSale snapshot timeout after {} ms during measurement\n",
+                                     config.startupTimeout.count());
+        }
 
         control->removeSymbols(config.task);
         const auto drainDeadline = std::chrono::steady_clock::now() + config.batchTimeout;
@@ -1530,7 +1717,7 @@ int main(int argc, char **argv) {
 
         endpoint->closeAndAwaitTermination();
 
-        return interrupted.load() ? 130 : 0;
+        return interrupted.load() ? 130 : snapshotTimedOut ? 1 : 0;
     } catch (const std::exception &e) {
         std::cerr << "Client error: " << e.what() << '\n';
 

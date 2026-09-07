@@ -103,6 +103,7 @@ interval. Its main options are:
 | `--batch-timeout` | `30s` | Maximum wait for an incomplete marker/event batch. |
 | `--startup-timeout` | `30s` | Maximum wait for all unique initial Profile symbols before warm-up. |
 | `--time-series-prefill` | `2s` | Time to retain live TimeAndSale events before adding the time-series symbols. |
+| `--time-series-subscribe-after` | disabled | Add the TimeAndSale subscription this long after measurement starts and report ticker latency before, during, and after its HISTORY snapshot. |
 | `--listener-delay` | `0` | Artificial delay at the start of each market-event callback. |
 | `--events-batch-limit` | `optimal` | Maximum market events per native notification: `optimal`, `maximum`, or a positive integer. |
 | `--aggregation-period` | `0` | Per-subscription market notification aggregation period; `0` disables explicit aggregation. |
@@ -139,12 +140,18 @@ C API client adds only the 375 base symbols because that API performs its own re
 
 `N` has deliberately different subscription semantics. TimeAndSale uses the base symbols through a separate
 `DXFeedTimeSeriesSubscription`, requires the `FEED` endpoint role, and is excluded from marker-correlated Q/T/E/S
-delivery accounting. The client records `fromTime`, waits for `--time-series-prefill`, subscribes, verifies snapshot
-completion, and then measures live TimeAndSale latency. For example,
+delivery accounting. In the default mode, the client records `fromTime`, waits for `--time-series-prefill`, subscribes,
+verifies snapshot completion, and only then starts warm-up and live measurement. For example,
 `SUB:Q300;T300;E300;S300;N300@10ms#300~22805` publishes 1,500 recurring events every 10 ms (150,000 events/s), while
 the two-second default prefill creates approximately 200 retained TimeAndSale events per symbol before the snapshot.
 The exact snapshot size can be lower at the boundary or capped by `--time-series-history`; a truncated snapshot is
 reported through `SNAPSHOT_SNIP`.
+
+With `--time-series-subscribe-after`, the client starts ticker measurement without TimeAndSale, waits the requested
+delay, sets `fromTime` to the subscription time minus `--time-series-prefill`, and adds the time-series symbols while
+the recurring ticker load continues. The additional `<prefix>-snapshot-overlap.csv` divides Q/T/E/S latency,
+listener coverage, CPU, and RSS into `BEFORE`, `DURING`, and `AFTER` phases. The total measurement duration remains
+fixed; the option must therefore be shorter than `--duration`.
 
 `latency_analyzer` is a standalone post-processing utility and does not connect to dxFeed. It reads a directory of
 latency summaries and captured QD logs, then writes `monitoring.csv` and `monitoring-summary.csv`. Pass
@@ -202,7 +209,7 @@ flowchart LR
 ```
 
 `latency_runner` can select the client and TimeAndSale setup per profile using optional fields:
-`PROFILE=name|task|client-role|events-batch-limit|aggregation-period|client-implementation|time-series-prefill|time-series-history`.
+`PROFILE=name|task|client-role|events-batch-limit|aggregation-period|client-implementation|time-series-prefill|time-series-history|time-series-subscribe-after`.
 The implementation is `graal` by default, preserving existing suite files; use `legacy` only in builds configured with
 `LATENCY_BUILD_LEGACY_CLIENT=ON`. Legacy runs write `<prefix>-delivery.csv`, and the analyzer produces separate
 `delivery-runs.csv` and `delivery-comparison.csv` files instead of presenting delivery counters as latency.
@@ -295,13 +302,13 @@ written below `benchmark-results/<UTC timestamp>/`. A full default run takes app
 minutes plus any machine-dependent startup overhead.
 
 A `PROFILE` line may override the endpoint role, events batch limit, aggregation period, client implementation,
-TimeAndSale prefill, and server history limit for that profile using
-`PROFILE=name|task|client-role|events-batch-limit|aggregation-period|client-implementation|time-series-prefill|time-series-history`.
+TimeAndSale prefill, server history limit, and delayed-subscription time for that profile using
+`PROFILE=name|task|client-role|events-batch-limit|aggregation-period|client-implementation|time-series-prefill|time-series-history|time-series-subscribe-after`.
 Omitted fields inherit `CLIENT_ROLE`, `EVENTS_BATCH_LIMIT`, `AGGREGATION_PERIOD`, `TIME_SERIES_PREFILL`, and
-`TIME_SERIES_HISTORY` from the suite; batch limit and aggregation default to `optimal` and `0`, while the client
-implementation defaults to `graal`. Command-line `--events-batch-limit` and `--aggregation-period` provide
-suite-wide overrides for profiles that do not specify them. The run manifest records the effective prefill and
-history limit for every execution.
+`TIME_SERIES_HISTORY` from the suite. `TIME_SERIES_SUBSCRIBE_AFTER` is optional and disabled when omitted. Batch limit
+and aggregation default to `optimal` and `0`, while the client implementation defaults to `graal`. Command-line
+`--events-batch-limit` and `--aggregation-period` provide suite-wide overrides for profiles that do not specify them.
+The run manifest records the effective prefill, history limit, and delayed-subscription time for every execution.
 
 A suite may describe its experiment with `EXPERIMENT_TITLE`, `EXPERIMENT_OBJECTIVE`, `EXPERIMENT_VARIABLE`,
 `EXPERIMENT_CONTROLS`, `EXPERIMENT_SUCCESS_CRITERIA`, and `EXPERIMENT_LIMITATIONS`. These settings are optional for
@@ -313,6 +320,8 @@ decision.
 [`tools/time-series-snapshot.conf`](tools/time-series-snapshot.conf) is the controlled TimeAndSale HISTORY experiment.
 It runs three repetitions at 150,000 total recurring events/s and reports initial snapshot completeness and flags,
 snapshot-to-live cutover, live TimeAndSale latency, regular ticker latency, QD monitoring, CPU, and RSS.
+TimeAndSale HISTORY suites require the default CXX API v8.0.0 build; the pinned v5/v7 builds are retained only for
+the non-HISTORY release-stack controls described below.
 
 [`tools/time-series-scaling.conf`](tools/time-series-scaling.conf) keeps the Q/T/E/S/N publication rate fixed and
 varies first the common subscribed symbol universe at a fixed 200-event history depth, then history depth at 375
@@ -321,6 +330,12 @@ warm-up time between profiles. This separates cardinality scaling from depth sca
 steady-state offered event rate. The
 TimeAndSale report includes Graal-client CPU and RSS sampled after snapshot completion during the measurement
 interval.
+
+[`tools/time-series-overlap.conf`](tools/time-series-overlap.conf) measures transient interference from a TimeAndSale
+HISTORY subscription added ten seconds after ticker measurement begins. It keeps the common 375-symbol Q/T/E/S/N
+workload and nominal 187,500 events/s fixed while varying retained history depth across 100, 200, and 1,000 events per
+symbol. The analyzer writes `snapshot-overlap-runs.csv` and `snapshot-overlap-comparison.csv` and adds a
+before/during/after table to `REPORT.md`.
 
 For a short contract A/B, run `tools/conflation-diagnostic.conf` once with the default `feed` role and once with a
 `stream-feed` override. The task, symbol set, cadence, warm-up, and measurement duration remain identical:
@@ -463,10 +478,12 @@ aggregation. It performs three repetitions per stack and takes approximately sev
 ```
 
 Each output prefix includes its repetition, for example `150k-100ms-r02`. The analyzer additionally writes
-`latency-runs.csv`, `latency-comparison.csv`, `monitoring-comparison.csv`, and a concise `REPORT.md`. Comparison CSVs
-contain the minimum, median, and maximum of run-level values; original summaries and logs remain available for more
-detailed analysis. A failed run is recorded in `run-manifest.csv`, its partial CSV files are preserved with a
-`.partial.csv` suffix, and the remaining profiles still run.
+`latency-runs.csv`, `latency-comparison.csv`, `monitoring-comparison.csv`, `snapshot-overlap-runs.csv`,
+`snapshot-overlap-comparison.csv`, and a concise `REPORT.md`. The snapshot-overlap CSVs contain headers only when the
+suite did not enable delayed TimeAndSale subscription. Comparison CSVs contain the minimum, median, and maximum of
+run-level values; original summaries and logs remain available for more detailed analysis. A failed run is recorded
+in `run-manifest.csv`, its partial CSV files are preserved with a `.partial.csv` suffix, and the remaining profiles
+still run.
 
 The client retains exact latency values to calculate whole-run percentiles. Each cadence profile records up to 90
 million event samples over ten minutes and can temporarily require several gigabytes of memory while final totals

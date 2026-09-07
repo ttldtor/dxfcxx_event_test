@@ -58,6 +58,9 @@ struct BenchmarkSuiteProfile {
 
     /// Optional maximum retained TimeAndSale events per symbol.
     std::optional<std::size_t> timeSeriesHistoryLimit;
+
+    /// Optional delay from measurement start before the TimeAndSale subscription is added.
+    std::optional<std::string> timeSeriesSubscribeAfter;
 };
 
 /// Contains global settings and workload profiles parsed from a suite configuration.
@@ -91,6 +94,9 @@ struct BenchmarkSuite {
 
     /// Maximum retained TimeAndSale events per symbol in the synthetic server.
     std::size_t timeSeriesHistoryLimit{1'000};
+
+    /// Optional delay from measurement start before adding TimeAndSale; empty keeps pre-measurement subscription.
+    std::optional<std::string> timeSeriesSubscribeAfter;
 
     /// Default client endpoint role.
     std::string clientRole;
@@ -166,6 +172,9 @@ struct BenchmarkRun {
 
     /// Effective maximum retained TimeAndSale events per symbol.
     std::size_t timeSeriesHistoryLimit{};
+
+    /// Effective delay from measurement start before adding TimeAndSale, when overlap measurement is enabled.
+    std::optional<std::string> timeSeriesSubscribeAfter;
 };
 
 /// Parses and validates a benchmark suite configuration.

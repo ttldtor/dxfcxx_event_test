@@ -27,6 +27,7 @@ namespace {
 constexpr std::string_view SUMMARY_SUFFIX = "-summary.csv";
 constexpr std::string_view DELIVERY_SUFFIX = "-delivery.csv";
 constexpr std::string_view TIME_SERIES_SUFFIX = "-time-series.csv";
+constexpr std::string_view SNAPSHOT_OVERLAP_SUFFIX = "-snapshot-overlap.csv";
 constexpr std::string_view NUMBER_PATTERN = R"([-+]?[0-9][0-9,]*(?:\.[0-9]+)?)";
 
 using Clock = std::chrono::system_clock;
@@ -136,6 +137,38 @@ struct TimeSeriesRunRow {
     double rssMaximumBytes{std::numeric_limits<double>::quiet_NaN()};
     double resourceSamples{std::numeric_limits<double>::quiet_NaN()};
     bool integrityOk{};
+};
+
+/** Contains one before/during/after ticker measurement around a TimeAndSale snapshot. */
+struct SnapshotOverlapRunRow {
+    std::string profile;
+    BenchmarkProfile identity;
+    std::string phase;
+    std::string sampleKind;
+    double durationMs{};
+    double samples{};
+    double published{};
+    double delivered{};
+    double listenerDeficit{};
+    double listenerCoverage{};
+    double excessEvents{};
+    double callbacks{};
+    double clockAnomalies{};
+    double missingBatches{};
+    double pendingBatches{};
+    double minimumUs{};
+    double meanUs{};
+    double p50Us{};
+    double p90Us{};
+    double p95Us{};
+    double p99Us{};
+    double p999Us{};
+    double maximumUs{};
+    double cpuCorePercent{};
+    double cpuHostPercent{};
+    double rssMeanBytes{};
+    double rssMaximumBytes{};
+    double resourceSamples{};
 };
 
 /** Reads optional experiment metadata from the suite configuration preserved with a benchmark run. */
@@ -981,6 +1014,132 @@ std::expected<TimeSeriesRunRow, std::string> readTimeSeries(const std::filesyste
     return row;
 }
 
+/** Reads before/during/after ticker measurements produced by an in-measurement HISTORY subscription. */
+std::expected<std::vector<SnapshotOverlapRunRow>, std::string> readSnapshotOverlap(const std::filesystem::path &path,
+                                                                                   const std::string &profile) {
+    std::ifstream input{path};
+
+    if (!input) {
+        return std::unexpected(std::format("cannot read snapshot-overlap result: {}", path.string()));
+    }
+
+    std::string line;
+
+    if (!std::getline(input, line)) {
+        return std::unexpected(std::format("empty snapshot-overlap result: {}", path.string()));
+    }
+
+    const auto headings = parseCsvRow(line);
+    const auto indexOf = [&](std::string_view name) -> std::expected<std::size_t, std::string> {
+        const auto found = std::ranges::find(headings, name);
+
+        if (found == headings.end()) {
+            return std::unexpected(std::format("snapshot-overlap result has no {} column: {}", name, path.string()));
+        }
+
+        return static_cast<std::size_t>(found - headings.begin());
+    };
+    constexpr std::array numericNames{"duration_ms",
+                                      "samples",
+                                      "published",
+                                      "delivered",
+                                      "listener_deficit",
+                                      "listener_coverage",
+                                      "excess_events",
+                                      "callbacks",
+                                      "clock_anomalies",
+                                      "missing_batches",
+                                      "pending_batches",
+                                      "min_us",
+                                      "mean_us",
+                                      "p50_us",
+                                      "p90_us",
+                                      "p95_us",
+                                      "p99_us",
+                                      "p999_us",
+                                      "max_us",
+                                      "cpu_core_percent",
+                                      "cpu_host_percent",
+                                      "rss_mean_bytes",
+                                      "rss_maximum_bytes",
+                                      "resource_samples"};
+    const auto phaseIndex = indexOf("phase");
+    const auto kindIndex = indexOf("sample_kind");
+    std::array<std::size_t, numericNames.size()> numericIndices{};
+
+    if (!phaseIndex || !kindIndex) {
+        return std::unexpected(!phaseIndex ? phaseIndex.error() : kindIndex.error());
+    }
+
+    for (std::size_t i = 0; i < numericNames.size(); ++i) {
+        const auto index = indexOf(numericNames[i]);
+
+        if (!index) {
+            return std::unexpected(index.error());
+        }
+
+        numericIndices[i] = *index;
+    }
+
+    std::vector<SnapshotOverlapRunRow> result;
+    const auto identity = parseBenchmarkProfile(profile);
+
+    while (std::getline(input, line)) {
+        const auto columns = parseCsvRow(line);
+        const auto maximumIndex = std::max({*phaseIndex, *kindIndex, *std::ranges::max_element(numericIndices)});
+
+        if (columns.size() <= maximumIndex) {
+            return std::unexpected(std::format("incomplete snapshot-overlap row: {}", path.string()));
+        }
+
+        std::array<double, numericNames.size()> values{};
+
+        for (std::size_t i = 0; i < numericIndices.size(); ++i) {
+            const auto value = parseNumber(columns[numericIndices[i]]);
+
+            if (!value) {
+                return std::unexpected(
+                    std::format("invalid {} in snapshot-overlap result: {}", numericNames[i], path.string()));
+            }
+
+            values[i] = *value;
+        }
+
+        SnapshotOverlapRunRow row{profile, identity, columns[*phaseIndex], columns[*kindIndex]};
+        row.durationMs = values[0];
+        row.samples = values[1];
+        row.published = values[2];
+        row.delivered = values[3];
+        row.listenerDeficit = values[4];
+        row.listenerCoverage = values[5];
+        row.excessEvents = values[6];
+        row.callbacks = values[7];
+        row.clockAnomalies = values[8];
+        row.missingBatches = values[9];
+        row.pendingBatches = values[10];
+        row.minimumUs = values[11];
+        row.meanUs = values[12];
+        row.p50Us = values[13];
+        row.p90Us = values[14];
+        row.p95Us = values[15];
+        row.p99Us = values[16];
+        row.p999Us = values[17];
+        row.maximumUs = values[18];
+        row.cpuCorePercent = values[19];
+        row.cpuHostPercent = values[20];
+        row.rssMeanBytes = values[21];
+        row.rssMaximumBytes = values[22];
+        row.resourceSamples = values[23];
+        result.push_back(std::move(row));
+    }
+
+    if (result.empty()) {
+        return std::unexpected(std::format("snapshot-overlap result has no data rows: {}", path.string()));
+    }
+
+    return result;
+}
+
 /** Writes the common header used by comparison CSV files. */
 void writeComparisonHeader(std::ostream &output) {
     output << "\"scenario\",\"category\",\"metric\",\"runs\",\"minimum\",\"median\",\"maximum\"\n";
@@ -1194,6 +1353,7 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
     std::vector<LatencyRunRow> latencyRows;
     std::vector<DeliveryRunRow> deliveryRows;
     std::vector<TimeSeriesRunRow> timeSeriesRows;
+    std::vector<SnapshotOverlapRunRow> snapshotOverlapRows;
 
     for (const auto &entry : std::filesystem::directory_iterator{runDirectory}) {
         const auto filename = entry.path().filename().string();
@@ -1220,6 +1380,20 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
             }
 
             timeSeriesRows.push_back(std::move(*row));
+
+            continue;
+        }
+
+        if (entry.is_regular_file() && filename.ends_with(SNAPSHOT_OVERLAP_SUFFIX)) {
+            const auto profile = filename.substr(0, filename.size() - SNAPSHOT_OVERLAP_SUFFIX.size());
+            auto rows = readSnapshotOverlap(entry.path(), profile);
+
+            if (!rows) {
+                return std::unexpected(rows.error());
+            }
+
+            snapshotOverlapRows.insert(snapshotOverlapRows.end(), std::make_move_iterator(rows->begin()),
+                                       std::make_move_iterator(rows->end()));
 
             continue;
         }
@@ -1252,6 +1426,9 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
     });
     std::ranges::sort(timeSeriesRows, {}, [](const TimeSeriesRunRow &row) {
         return std::tuple{row.identity.scenario, row.identity.repetition};
+    });
+    std::ranges::sort(snapshotOverlapRows, {}, [](const SnapshotOverlapRunRow &row) {
+        return std::tuple{row.identity.scenario, row.identity.repetition, row.phase, row.sampleKind};
     });
 
     std::ofstream deliveryRuns;
@@ -1414,6 +1591,91 @@ std::expected<void, std::string> writeBenchmarkComparison(const std::filesystem:
             }
 
             writeComparisonRow(timeSeriesComparison, {scenario, "time-series", name, compareRuns(std::move(values))});
+        }
+    }
+
+    std::ofstream snapshotOverlapRuns;
+
+    if (auto opened = openOutput(snapshotOverlapRuns, runDirectory / "snapshot-overlap-runs.csv"); !opened) {
+        return opened;
+    }
+
+    snapshotOverlapRuns << "\"profile\",\"scenario\",\"repetition\",\"phase\",\"sample_kind\",\"duration_ms\","
+                           "\"samples\",\"published\",\"delivered\",\"listener_deficit\",\"listener_coverage\","
+                           "\"excess_events\",\"callbacks\",\"clock_anomalies\",\"missing_batches\","
+                           "\"pending_batches\",\"min_us\",\"mean_us\",\"p50_us\",\"p90_us\",\"p95_us\","
+                           "\"p99_us\",\"p999_us\",\"max_us\",\"cpu_core_percent\",\"cpu_host_percent\","
+                           "\"rss_mean_bytes\",\"rss_maximum_bytes\",\"resource_samples\"\n";
+
+    for (const auto &row : snapshotOverlapRows) {
+        writeColumn(snapshotOverlapRuns, row.profile, true);
+        writeColumn(snapshotOverlapRuns, row.identity.scenario);
+        writeColumn(snapshotOverlapRuns, static_cast<double>(row.identity.repetition));
+        writeColumn(snapshotOverlapRuns, row.phase);
+        writeColumn(snapshotOverlapRuns, row.sampleKind);
+
+        for (const auto value : {row.durationMs,     row.samples,         row.published,
+                                 row.delivered,      row.listenerDeficit, row.listenerCoverage,
+                                 row.excessEvents,   row.callbacks,       row.clockAnomalies,
+                                 row.missingBatches, row.pendingBatches,  row.minimumUs,
+                                 row.meanUs,         row.p50Us,           row.p90Us,
+                                 row.p95Us,          row.p99Us,           row.p999Us,
+                                 row.maximumUs,      row.cpuCorePercent,  row.cpuHostPercent,
+                                 row.rssMeanBytes,   row.rssMaximumBytes, row.resourceSamples}) {
+            writeColumn(snapshotOverlapRuns, value);
+        }
+
+        snapshotOverlapRuns << '\n';
+    }
+
+    /** Maps a snapshot-overlap comparison name to its run-row member. */
+    struct SnapshotOverlapMetric {
+        std::string_view name;
+        double SnapshotOverlapRunRow::*member;
+    };
+
+    constexpr std::array snapshotOverlapMetrics{
+        SnapshotOverlapMetric{"duration_ms", &SnapshotOverlapRunRow::durationMs},
+        SnapshotOverlapMetric{"samples", &SnapshotOverlapRunRow::samples},
+        SnapshotOverlapMetric{"listener_coverage", &SnapshotOverlapRunRow::listenerCoverage},
+        SnapshotOverlapMetric{"listener_deficit", &SnapshotOverlapRunRow::listenerDeficit},
+        SnapshotOverlapMetric{"mean_us", &SnapshotOverlapRunRow::meanUs},
+        SnapshotOverlapMetric{"p50_us", &SnapshotOverlapRunRow::p50Us},
+        SnapshotOverlapMetric{"p90_us", &SnapshotOverlapRunRow::p90Us},
+        SnapshotOverlapMetric{"p99_us", &SnapshotOverlapRunRow::p99Us},
+        SnapshotOverlapMetric{"p999_us", &SnapshotOverlapRunRow::p999Us},
+        SnapshotOverlapMetric{"max_us", &SnapshotOverlapRunRow::maximumUs},
+        SnapshotOverlapMetric{"cpu_core_percent", &SnapshotOverlapRunRow::cpuCorePercent},
+        SnapshotOverlapMetric{"cpu_host_percent", &SnapshotOverlapRunRow::cpuHostPercent},
+        SnapshotOverlapMetric{"rss_mean_bytes", &SnapshotOverlapRunRow::rssMeanBytes},
+        SnapshotOverlapMetric{"rss_maximum_bytes", &SnapshotOverlapRunRow::rssMaximumBytes}};
+    std::map<std::tuple<std::string, std::string, std::string>, std::vector<const SnapshotOverlapRunRow *>>
+        snapshotOverlapGroups;
+
+    for (const auto &row : snapshotOverlapRows) {
+        snapshotOverlapGroups[{row.identity.scenario, row.phase, row.sampleKind}].push_back(&row);
+    }
+
+    std::ofstream snapshotOverlapComparison;
+
+    if (auto opened = openOutput(snapshotOverlapComparison, runDirectory / "snapshot-overlap-comparison.csv");
+        !opened) {
+        return opened;
+    }
+
+    writeComparisonHeader(snapshotOverlapComparison);
+
+    for (const auto &[key, rows] : snapshotOverlapGroups) {
+        for (const auto &metric : snapshotOverlapMetrics) {
+            std::vector<double> values;
+
+            for (const auto *row : rows) {
+                values.push_back(row->*(metric.member));
+            }
+
+            writeComparisonRow(snapshotOverlapComparison,
+                               {std::get<0>(key), std::format("{}:{}", std::get<1>(key), std::get<2>(key)),
+                                std::string{metric.name}, compareRuns(std::move(values))});
         }
     }
 
@@ -1678,6 +1940,62 @@ snapshots for other symbols are still in progress; this is valid per-symbol snap
 is reported separately because it is an expected bounded-history condition, not an integrity failure.
 CPU and RSS are sampled in the Graal client during the configured measurement interval, after the initial snapshot.
 
+        )";
+    }
+
+    if (!snapshotOverlapRows.empty()) {
+        report << R"(## Ticker latency around TimeAndSale snapshot delivery
+
+The client starts ticker measurement first, adds the TimeAndSale HISTORY subscription after the configured delay,
+and partitions ticker observations into `before`, `during`, and `after` phases. Phase boundaries are detected by the
+client at subscription and global snapshot completion. Values are medians across repetitions.
+
+| Scenario | Phase | Runs | Duration | Listener coverage | Event p50 | Event p99 (range) | Event p99.9 | Event maximum | CPU, one-core basis | RSS mean / maximum |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+)";
+        std::map<std::pair<std::string, std::string>, std::vector<const SnapshotOverlapRunRow *>> phaseRows;
+
+        for (const auto &row : snapshotOverlapRows) {
+            if (row.sampleKind == "event") {
+                phaseRows[{row.identity.scenario, row.phase}].push_back(&row);
+            }
+        }
+
+        for (const auto &[key, rows] : phaseRows) {
+            const auto collect = [&](double SnapshotOverlapRunRow::*member) {
+                std::vector<double> values;
+
+                for (const auto *row : rows) {
+                    values.push_back(row->*member);
+                }
+
+                return compareRuns(std::move(values));
+            };
+            const auto duration = collect(&SnapshotOverlapRunRow::durationMs);
+            const auto coverage = collect(&SnapshotOverlapRunRow::listenerCoverage);
+            const auto p50 = collect(&SnapshotOverlapRunRow::p50Us);
+            const auto p99 = collect(&SnapshotOverlapRunRow::p99Us);
+            const auto p999 = collect(&SnapshotOverlapRunRow::p999Us);
+            const auto maximum = collect(&SnapshotOverlapRunRow::maximumUs);
+            const auto cpu = collect(&SnapshotOverlapRunRow::cpuCorePercent);
+            const auto rssMean = collect(&SnapshotOverlapRunRow::rssMeanBytes);
+            const auto rssMaximum = collect(&SnapshotOverlapRunRow::rssMaximumBytes);
+
+            report << std::format("| {} | {} | {} | {:.3f} ms | {:.3f}% | {:.3f} us | {:.3f} "
+                                  "({:.3f}–{:.3f}) us | {:.3f} us | {:.3f} us | {:.3f}% | {:.3f} / {:.3f} MiB |\n",
+                                  key.first, key.second, rows.size(), duration.median, coverage.median * 100.0,
+                                  p50.median, p99.median, p99.minimum, p99.maximum, p999.median, maximum.median,
+                                  cpu.median, rssMean.median / 1'048'576.0, rssMaximum.median / 1'048'576.0);
+        }
+
+        report << R"(
+
+Phase latency is based on marker-correlated Quote/Trade/TradeETH/Summary listener observations. Resource sampling is
+performed separately in each phase; 100% CPU means one fully occupied logical core. A short `during` phase can have
+few samples, so its range and the raw per-run CSV must be considered alongside the median. Phase delivery counters
+can straddle a boundary when market events and their timestamp marker complete on opposite sides of it; whole-run
+integrity and QD `Dropped` remain the authoritative loss checks.
+
 )";
     }
 
@@ -1754,8 +2072,9 @@ are observations rather than integrity failures; STREAM_FEED still requires exac
 )";
 
     report << "\nGenerated files: `latency-runs.csv`, `latency-comparison.csv`, `time-series-runs.csv`, "
-              "`time-series-comparison.csv`, `delivery-runs.csv`, `delivery-comparison.csv`, `monitoring.csv`, "
-              "`monitoring-summary.csv`, and `monitoring-comparison.csv`.\n\n"
+              "`time-series-comparison.csv`, `snapshot-overlap-runs.csv`, `snapshot-overlap-comparison.csv`, "
+              "`delivery-runs.csv`, `delivery-comparison.csv`, `monitoring.csv`, `monitoring-summary.csv`, and "
+              "`monitoring-comparison.csv`.\n\n"
               "## Client monitoring\n\n"
               "The table shows medians across repetitions. Lag is in milliseconds; dropped is the largest per-run "
               "sum and buffer is the largest per-run high-water mark.\n\n"
@@ -1774,6 +2093,10 @@ are observations rather than integrity failures; STREAM_FEED still requires exac
 
     for (const auto &[scenario, rows] : timeSeriesScenarios) {
         monitoringScenarios[scenario] = true;
+    }
+
+    for (const auto &row : snapshotOverlapRows) {
+        monitoringScenarios[row.identity.scenario] = true;
     }
 
     const auto monitoringValue = [&](const std::string &scenario, std::string_view process, std::string_view metric) {

@@ -609,7 +609,7 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
         if (key == "PROFILE") {
             const auto parts = split(value, '|');
 
-            if (parts.size() < 2 || parts.size() > 8 || parts[0].empty() || parts[1].empty()) {
+            if (parts.size() < 2 || parts.size() > 9 || parts[0].empty() || parts[1].empty()) {
                 return std::unexpected{std::format("Invalid PROFILE line: {}", rawLine)};
             }
 
@@ -631,7 +631,8 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
                                       parts.size() >= 5 && !parts[4].empty() ? std::optional{parts[4]} : std::nullopt,
                                       parts.size() >= 6 && !parts[5].empty() ? std::optional{parts[5]} : std::nullopt,
                                       parts.size() >= 7 && !parts[6].empty() ? std::optional{parts[6]} : std::nullopt,
-                                      timeSeriesHistoryLimit});
+                                      timeSeriesHistoryLimit,
+                                      parts.size() >= 9 && !parts[8].empty() ? std::optional{parts[8]} : std::nullopt});
         } else {
             settings[key] = value;
         }
@@ -727,6 +728,14 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
         suite.timeSeriesHistoryLimit = *historyLimit;
     }
 
+    if (const auto found = settings.find("TIME_SERIES_SUBSCRIBE_AFTER"); found != settings.end()) {
+        if (found->second.empty()) {
+            return std::unexpected{"TIME_SERIES_SUBSCRIBE_AFTER must not be empty"};
+        }
+
+        suite.timeSeriesSubscribeAfter = found->second;
+    }
+
     const std::array experimentSettings{
         std::pair{"EXPERIMENT_TITLE", &suite.experiment.title},
         std::pair{"EXPERIMENT_OBJECTIVE", &suite.experiment.objective},
@@ -762,6 +771,7 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
                                               "MONITORING_PERIOD",
                                               "TIME_SERIES_PREFILL",
                                               "TIME_SERIES_HISTORY",
+                                              "TIME_SERIES_SUBSCRIBE_AFTER",
                                               "CLIENT_ROLE",
                                               "LISTENER_DELAY",
                                               "EVENTS_BATCH_LIMIT",
@@ -808,6 +818,11 @@ std::expected<BenchmarkSuite, std::string> parseBenchmarkSuite(std::istream &inp
                                                task.error().position, task.error().message)};
         }
 
+        if (profile.timeSeriesSubscribeAfter && !task->quantity(EventKind::TIME_AND_SALE).value_or(0)) {
+            return std::unexpected{
+                std::format("Time-series subscribe delay for profile {} requires TimeAndSale", profile.name)};
+        }
+
         if (task->quantity(EventKind::TIME_AND_SALE).value_or(0)) {
             const auto role = profile.clientRole.value_or(suite.clientRole);
             const auto implementation = profile.clientImplementation.value_or("graal");
@@ -848,13 +863,21 @@ std::vector<BenchmarkRun> buildBenchmarkPlan(const BenchmarkSuite &suite, const 
     for (std::size_t repetition = 1; repetition <= suite.repetitions; ++repetition) {
         for (std::size_t position = 0; position < suite.profiles.size(); ++position) {
             const auto &profile = suite.profiles[(position + repetition - 1) % suite.profiles.size()];
+            const auto task = parseTask(profile.task);
+            const auto hasTimeSeries = task && task->quantity(EventKind::TIME_AND_SALE).value_or(0) > 0;
+            const auto timeSeriesSubscribeAfter = hasTimeSeries ? profile.timeSeriesSubscribeAfter.or_else([&suite] {
+                return suite.timeSeriesSubscribeAfter;
+            })
+                                                                : std::nullopt;
+
             result.push_back({profile.name, repetition, std::format("{}-r{:02}", profile.name, repetition),
                               profile.task, profile.clientRole.value_or(defaultRole), listenerDelay,
                               profile.eventsBatchLimit.value_or(defaultBatchLimit),
                               profile.aggregationPeriod.value_or(defaultAggregationPeriod),
                               profile.clientImplementation.value_or("graal"),
                               profile.timeSeriesPrefill.value_or(suite.timeSeriesPrefill),
-                              profile.timeSeriesHistoryLimit.value_or(suite.timeSeriesHistoryLimit)});
+                              profile.timeSeriesHistoryLimit.value_or(suite.timeSeriesHistoryLimit),
+                              timeSeriesSubscribeAfter});
         }
     }
 
@@ -916,13 +939,12 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
     if (dryRun) {
         for (const auto &run : plan) {
             std::cout << std::format("{} : {} ; client={} role={} events-batch-limit={} aggregation-period={} "
-                                     "listener-delay={} "
-                                     "startup-timeout={} time-series-prefill={} time-series-history={} warmup={} "
-                                     "duration={}\n",
+                                     "listener-delay={} startup-timeout={} time-series-prefill={} "
+                                     "time-series-history={} time-series-subscribe-after={} warmup={} duration={}\n",
                                      run.prefix, run.task, run.clientImplementation, run.clientRole,
                                      run.eventsBatchLimit, run.aggregationPeriod, run.listenerDelay,
                                      suite.startupTimeout, run.timeSeriesPrefill, run.timeSeriesHistoryLimit,
-                                     suite.warmup, suite.duration);
+                                     run.timeSeriesSubscribeAfter.value_or("disabled"), suite.warmup, suite.duration);
         }
 
         std::cout << std::format("Analyzer: {} --monitoring-period {}\n", analyzer.string(), suite.monitoringPeriod);
@@ -954,7 +976,7 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
 
     std::ofstream manifest{runDirectory / "run-manifest.csv"};
     manifest << "profile,repetition,task,client_implementation,client_role,events_batch_limit,aggregation_period,"
-                "time_series_prefill,time_series_history,status,client_exit_code\n";
+                "time_series_prefill,time_series_history,time_series_subscribe_after,status,client_exit_code\n";
     std::ofstream environment{runDirectory / "environment.txt"};
     environment << "started_utc=" << timestamp(false) << '\n';
     environment << "git_commit=" << gitCommit() << '\n';
@@ -992,7 +1014,9 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
                 << "events_batch_limit=" << overrides.eventsBatchLimit.value_or(suite.eventsBatchLimit) << '\n'
                 << "aggregation_period=" << overrides.aggregationPeriod.value_or(suite.aggregationPeriod) << '\n';
     environment << "time_series_prefill_default=" << suite.timeSeriesPrefill << '\n'
-                << "time_series_history_default=" << suite.timeSeriesHistoryLimit << '\n';
+                << "time_series_history_default=" << suite.timeSeriesHistoryLimit << '\n'
+                << "time_series_subscribe_after_default=" << suite.timeSeriesSubscribeAfter.value_or("disabled")
+                << '\n';
     environment.flush();
 
     bool failed{};
@@ -1035,36 +1059,41 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
                                            "--output", prefix.string(), "--contract", "default", "--require-events"},
                                           clientLog);
             } else {
-                clientResult = runAndWait(client,
-                                          {"--address",
-                                           suite.address,
-                                           "--task",
-                                           run.task,
-                                           "--role",
-                                           run.clientRole,
-                                           "--listener-delay",
-                                           run.listenerDelay,
-                                           "--events-batch-limit",
-                                           run.eventsBatchLimit,
-                                           "--aggregation-period",
-                                           run.aggregationPeriod,
-                                           "--warmup",
-                                           suite.warmup,
-                                           "--duration",
-                                           suite.duration,
-                                           "--window",
-                                           suite.window,
-                                           "--batch-timeout",
-                                           suite.batchTimeout,
-                                           "--startup-timeout",
-                                           suite.startupTimeout,
-                                           "--time-series-prefill",
-                                           run.timeSeriesPrefill,
-                                           "--monitoring-stat",
-                                           suite.monitoringPeriod,
-                                           "--output",
-                                           prefix.string()},
-                                          clientLog);
+                std::vector<std::string> clientArguments{"--address",
+                                                         suite.address,
+                                                         "--task",
+                                                         run.task,
+                                                         "--role",
+                                                         run.clientRole,
+                                                         "--listener-delay",
+                                                         run.listenerDelay,
+                                                         "--events-batch-limit",
+                                                         run.eventsBatchLimit,
+                                                         "--aggregation-period",
+                                                         run.aggregationPeriod,
+                                                         "--warmup",
+                                                         suite.warmup,
+                                                         "--duration",
+                                                         suite.duration,
+                                                         "--window",
+                                                         suite.window,
+                                                         "--batch-timeout",
+                                                         suite.batchTimeout,
+                                                         "--startup-timeout",
+                                                         suite.startupTimeout,
+                                                         "--time-series-prefill",
+                                                         run.timeSeriesPrefill,
+                                                         "--monitoring-stat",
+                                                         suite.monitoringPeriod,
+                                                         "--output",
+                                                         prefix.string()};
+
+                if (run.timeSeriesSubscribeAfter) {
+                    clientArguments.insert(clientArguments.end(),
+                                           {"--time-series-subscribe-after", *run.timeSeriesSubscribeAfter});
+                }
+
+                clientResult = runAndWait(client, clientArguments, clientLog);
             }
 
             clientExit = clientResult.value_or(-1);
@@ -1099,8 +1128,8 @@ int runBenchmarkSuite(const std::filesystem::path &binaryDirectory, const std::f
 
         manifest << csv(run.profile) << ',' << run.repetition << ',' << csv(run.task) << ',' << run.clientImplementation
                  << ',' << run.clientRole << ',' << run.eventsBatchLimit << ',' << run.aggregationPeriod << ','
-                 << run.timeSeriesPrefill << ',' << run.timeSeriesHistoryLimit << ',' << status << ',' << clientExit
-                 << '\n';
+                 << run.timeSeriesPrefill << ',' << run.timeSeriesHistoryLimit << ','
+                 << csv(run.timeSeriesSubscribeAfter.value_or("")) << ',' << status << ',' << clientExit << '\n';
         manifest.flush();
 
         if (index + 1 < plan.size()) {

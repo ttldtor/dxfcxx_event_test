@@ -120,6 +120,11 @@ if(BUILD_TESTING)
     add_executable(latency_tests tests/core_tests.cpp)
     target_compile_definitions(latency_tests PRIVATE
             LATENCY_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/monitoring-run")
+
+    if(LATENCY_DXFCXX_RELEASE STREQUAL "v8.0.0")
+        target_compile_definitions(latency_tests PRIVATE LATENCY_DXFCXX_HAS_PACKED_TIME_FIX=1)
+    endif()
+
     target_link_libraries(latency_tests PRIVATE latency_core dxfcxx::static doctest::doctest_with_main)
     add_custom_command(TARGET latency_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:dxfcxx::graal> $<TARGET_FILE_DIR:latency_tests>)

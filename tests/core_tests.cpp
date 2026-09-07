@@ -294,6 +294,13 @@ PROFILE=example|SUB:Q1
             << R"(from_time_ms,requested_symbols,observed_symbols,completed_symbols,snapshot_events,snapshot_callbacks,snapshot_begin,snapshot_end,snapshot_snip,snapshot_remove,duplicate_indices,premature_live_events,live_events,clock_anomalies,first_event_delay_ms,snapshot_duration_ms,first_live_relative_to_global_completion_ms,live_latency_samples,live_latency_mean_us,live_latency_p50_us,live_latency_p90_us,live_latency_p99_us,live_latency_p999_us,live_latency_max_us,cpu_core_percent,cpu_host_percent,rss_mean_bytes,rss_maximum_bytes,resource_samples
 1788307200000,1,1,1,200,2,1,1,0,1,0,0,100,0,1.5,3.0,0.5,100,100,90,150,200,250,300,20,2,104857600,125829120,100
 )";
+        std::ofstream snapshotOverlap{repeatedFixture.path() / std::format("{}-snapshot-overlap.csv", profile)};
+        snapshotOverlap
+            << R"(phase,phase_start_utc,phase_end_utc,duration_ms,sample_kind,samples,published,delivered,listener_deficit,listener_coverage,excess_events,callbacks,clock_anomalies,missing_batches,pending_batches,min_us,mean_us,p50_us,p90_us,p95_us,p99_us,p999_us,max_us,cpu_core_percent,cpu_host_percent,rss_mean_bytes,rss_maximum_bytes,resource_samples
+before,2026-01-02T00:00:00.000Z,2026-01-02T00:00:01.000Z,1000,event,100,100,100,0,1,0,10,0,0,0,10,20,18,25,28,30,32,40,10,1,104857600,105906176,10
+during,2026-01-02T00:00:01.000Z,2026-01-02T00:00:01.100Z,100,event,10,10,10,0,1,0,2,0,0,0,20,40,35,50,55,60,65,80,40,4,125829120,136314880,10
+after,2026-01-02T00:00:01.100Z,2026-01-02T00:00:02.000Z,900,event,90,90,90,0,1,0,9,0,0,0,10,22,20,27,30,33,35,45,12,1.2,110100480,115343360,10
+)";
         std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-server.log",
                                    repeatedFixture.path() / std::format("{}-server.log", legacyProfile));
         std::filesystem::copy_file(FIXTURE_DIRECTORY / "example-client.log",
@@ -314,6 +321,8 @@ PROFILE=example|SUB:Q1
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "delivery-comparison.csv") > 0);
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "time-series-runs.csv") > 0);
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "time-series-comparison.csv") > 0);
+    CHECK(std::filesystem::file_size(repeatedFixture.path() / "snapshot-overlap-runs.csv") > 0);
+    CHECK(std::filesystem::file_size(repeatedFixture.path() / "snapshot-overlap-comparison.csv") > 0);
     CHECK(std::filesystem::file_size(repeatedFixture.path() / "monitoring-comparison.csv") > 0);
 
     std::ifstream latencyRuns{repeatedFixture.path() / "latency-runs.csv"};
@@ -336,6 +345,8 @@ PROFILE=example|SUB:Q1
     CHECK(reportText.contains("## Results"));
     CHECK(reportText.contains("## Legacy C API delivery"));
     CHECK(reportText.contains("## TimeAndSale snapshot and live cutover"));
+    CHECK(reportText.contains("## Ticker latency around TimeAndSale snapshot delivery"));
+    CHECK(reportText.contains("| example | during | 3 | 100.000 ms | 100.000%"));
     CHECK(reportText.contains("| example | 3 | 1 | 200 (200–200)"));
     CHECK(reportText.contains("| legacy-example | default | 3 | 400.000 | 400.000"));
     CHECK(reportText.contains("| example | stream-feed | unknown | 0.000 ms | 3 |"));
@@ -425,6 +436,7 @@ TEST_CASE("the default isolate properties file enables nanosecond timestamps") {
     CHECK(dxfcpp::System::getProperty("dxscheme.nanoTime") == "true");
 }
 
+#if defined(LATENCY_DXFCXX_HAS_PACKED_TIME_FIX)
 TEST_CASE("TimeAndSale sequence preserves its packed timestamp") {
     constexpr std::int64_t TIME_NANOS = 1'788'739'200'123'456'789;
     dxfcpp::TimeAndSale event{"TEST"};
@@ -438,6 +450,7 @@ TEST_CASE("TimeAndSale sequence preserves its packed timestamp") {
         CHECK(event.getTimeNanos() == TIME_NANOS);
     }
 }
+#endif
 
 TEST_CASE("benchmark suite parsing and rotating execution plan") {
     std::istringstream input{R"(# benchmark suite
@@ -518,6 +531,28 @@ PROFILE=legacy|SUB:Q1
 
     REQUIRE(legacySuite.has_value());
     CHECK(legacySuite->experiment.title.empty());
+
+    std::istringstream overlapInput{R"(REPETITIONS=1
+WARMUP=1s
+DURATION=4s
+WINDOW=1s
+BATCH_TIMEOUT=3s
+STARTUP_TIMEOUT=4s
+MONITORING_PERIOD=1s
+TIME_SERIES_SUBSCRIBE_AFTER=1s
+CLIENT_ROLE=feed
+COOLDOWN_SECONDS=0
+ADDRESS=127.0.0.1:7400
+LISTEN_ADDRESS=:7400
+PROFILE=overlap|SUB:Q1;N1
+)"};
+    const auto overlapSuite = parseBenchmarkSuite(overlapInput);
+
+    REQUIRE(overlapSuite.has_value());
+    REQUIRE(overlapSuite->timeSeriesSubscribeAfter == "1s");
+    const auto overlapPlan = buildBenchmarkPlan(*overlapSuite);
+    REQUIRE(overlapPlan.size() == 1);
+    CHECK(overlapPlan.front().timeSeriesSubscribeAfter == "1s");
 }
 
 TEST_CASE("invalid benchmark suite settings are rejected") {
