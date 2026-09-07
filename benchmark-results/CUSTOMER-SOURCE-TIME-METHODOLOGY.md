@@ -103,7 +103,24 @@ This design can isolate regressions in the controlled local client/API path and 
 algorithm changes its own sample. It cannot reproduce a production-only server, network, clock, or live-burst fault
 unless that condition is recorded or deliberately injected.
 
-## Controlled reproduction of the selection rule
+## Primary marker-correlated E2E results
+
+The primary measurement uses the nanosecond publication marker rather than `Trade.time`. Values are medians across
+three repetitions. Event latency is calculated for every recurring Quote, Trade, TradeETH, and Summary observation
+that can be correlated with its publication. Batch latency describes completion of a correlated publication at the
+listener.
+
+| Scenario | Listener coverage | Listener deficit | Event p50 | Event p99 | Event p99.9 | Event maximum | Batch p99 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| FEED, optimal batch | 99.903% | 4,377 | 3.023 ms | 9.540 ms | 15.123 ms | 19.937 ms | 11.125 ms |
+| STREAM_FEED, optimal batch | 100.000% | 0 | 3.175 ms | 9.133 ms | 15.640 ms | 18.434 ms | 10.128 ms |
+| FEED, batch limit 1 | 23.256% | 3,436,218 | 7.566 ms | 16.403 ms | 23.348 ms | 48.534 ms | 22.201 ms |
+
+The optimal FEED and exact-delivery STREAM_FEED controls have similar E2E distributions and no large unexplained
+tail. The one-event callback limit is intentionally pathological: it increases callback work, latency, and normal
+FEED listener deficit even though the QD transport continues consuming close to the offered record rate.
+
+## Secondary source-time methodology control
 
 The benchmark publishes Quote, Trade, TradeETH, and Summary for 375 shared symbols every 10 ms: 1,500 events per
 publication and 150,000 recurring events/s. Trade and TradeETH carry the same millisecond source timestamp for a
@@ -154,6 +171,18 @@ the transport continues to consume records. Such normal FEED behavior is not req
 The source-level distinction between FEED and STREAM_FEED is discussed in
 [QD FEED delivery path](QD-FEED-DELIVERY-PATH.md). The test cannot localize every superseded state to one exact
 server-side or client-side queue without record-level tracing.
+
+The resource and QD measurements provide an independent interpretation layer:
+
+| Scenario | Client read | Server write | Client read lag | Client/server maximum buffer | Maximum Dropped | Client CPU, one core | Client maximum RSS |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| FEED, optimal batch | 149,252 records/s | 149,139 records/s | 0.390 ms | 0 / 0 | 0 | 37.766% | 199.438 MiB |
+| STREAM_FEED, optimal batch | 149,289 records/s | 149,373 records/s | 0.434 ms | 535 / 1,234 | 0 | 34.997% | 200.109 MiB |
+| FEED, batch limit 1 | 148,779 records/s | 148,713 records/s | 0.335 ms | 0 / 0 | 0 | 124.581% | 120.621 MiB |
+
+CPU is normalized to one logical core. Buffer values are the largest observed high-water marks across the repeated
+runs; the rates, lag, CPU, and RSS values are run medians. The lower RSS in the one-event FEED scenario accompanies a
+much smaller listener-observed population and must not be interpreted as greater delivery efficiency.
 
 ## What the broader benchmark establishes
 
