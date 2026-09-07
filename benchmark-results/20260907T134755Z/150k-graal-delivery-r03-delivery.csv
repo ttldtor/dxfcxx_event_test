@@ -1,0 +1,2 @@
+"window_start_utc","window_end_utc","sample_kind","expected_per_batch","nominal_events_per_second","callbacks","recurring_events","quote","trade","trade_eth","summary","profiles","maximum_data_count","actual_events_per_second","cpu_core_percent","cpu_host_percent","rss_mean_bytes","rss_maximum_bytes","resource_samples","implementation","contract"
+"2026-09-07T13:55:58.579Z","2026-09-07T13:56:28.585Z","event",1500,150000.000,12164,4488876,1122000,1122000,1122308,1122000,0,954,149600.469,26.038,0.814,98839944,104714240,480,"graal","stream-feed"

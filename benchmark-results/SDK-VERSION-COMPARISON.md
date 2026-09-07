@@ -121,13 +121,75 @@ The separate v8 TimeAndSale test validates HISTORY snapshot-to-live behavior, bu
 comparison: the v7 packed-index bug corrupts `TimeAndSale` timestamps when `setSequence()` follows `setTimeNanos()`,
 so a valid equivalent v7 HISTORY baseline cannot be produced through the public setters.
 
+## Delivery-only v5.0.0, v7.0.0, and v8.0.0 control
+
+The final control uses the same minimal Graal CXX client source on all three stacks. Its listener keeps native vector
+callback boundaries, inspects event types, and records counters and process resources. It deliberately omits the
+benchmark's `TextMessage` correlation, per-event timestamp samples, pending-publication map, window distributions,
+and outlier storage. This separates release-stack delivery cost from the sizeable cost of the measurement code.
+
+Every stack ran the same shuffled Q/T/E/S workload over loopback in `STREAM_FEED`: 375 base symbols, 1,500 events
+per publication, 15 seconds of warm-up, 30 seconds of measurement, and three repetitions at each requested rate.
+The profile order rotated between repetitions. The builds and runs were sequential on the same 32-logical-processor
+Windows host with MSVC 19.51.36256.0. The stack order was v5, v8, then v7, so stack version is not monotonically
+aligned with host warm-up.
+
+| Nominal rate | Stack | Observed events/s | One-core CPU | CPU per 1M events/s | RSS mean | RSS maximum | Callbacks |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 150k | v5 / SDK 2.6.2 / QD 3.342 | 149,318 | 27.598% | 184.8% | 93.015 MiB | 97.914 MiB | 12,042 |
+| 150k | v7 / SDK 3.2.0 / QD 3.347 | 149,531 | 25.971% | 173.7% | 96.678 MiB | 100.266 MiB | 12,100 |
+| 150k | v8 / SDK 3.2.13 / QD 3.353 | 149,393 | 26.038% | 174.3% | 95.727 MiB | 100.438 MiB | 12,227 |
+| 375k | v5 / SDK 2.6.2 / QD 3.342 | 368,816 | 64.389% | 174.6% | 69.490 MiB | 93.559 MiB | 30,326 |
+| 375k | v7 / SDK 3.2.0 / QD 3.347 | 367,755 | 63.128% | 171.7% | 70.197 MiB | 94.617 MiB | 30,610 |
+| 375k | v8 / SDK 3.2.13 / QD 3.353 | 368,444 | 64.632% | 175.4% | 68.183 MiB | 91.934 MiB | 31,277 |
+| 500k | v5 / SDK 2.6.2 / QD 3.342 | 478,853 | 82.628% | 172.6% | 66.147 MiB | 86.281 MiB | 39,503 |
+| 500k | v7 / SDK 3.2.0 / QD 3.347 | 479,604 | 80.547% | 167.9% | 69.722 MiB | 90.105 MiB | 40,056 |
+| 500k | v8 / SDK 3.2.13 / QD 3.353 | 480,285 | 83.594% | 174.0% | 66.331 MiB | 84.016 MiB | 40,992 |
+
+Values are run-level medians. `CPU per 1M events/s` is the one-core CPU median divided by the observed event-rate
+median and scaled to one million events/s; it is a descriptive normalization, not a claim that CPU scales linearly.
+
+There is no monotonic delivery-cost regression across releases. Relative to v5, v8 one-core CPU is 5.7% lower at
+150k, 0.4% higher at 375k, and 1.2% higher at 500k. The run-level ranges overlap at every rate. v7 is slightly lower
+at the two heavier points, but the separation is small enough to include normal host and callback-shape variation.
+Observed delivery differs by at most 0.3% between stack medians at a given requested rate.
+
+All 27 runs completed. Client and server monitoring report `Dropped = 0` throughout. Median server write and client
+read rates closely match on every stack. Median read lag stays between 0.414 and 0.544 ms, while median write lag
+stays between 0.120 and 0.133 ms. Nothing indicates a growing transport queue or a client falling behind. Callback
+counts differ modestly, most visibly for v8 at 375k and 500k, but maximum callback sizes remain similar and the CPU
+result does not track this difference consistently.
+
+The nominal 500k profile again reaches only about 472k-485k events/s. Because the listener, client read rate, and
+server write rate agree and QD reports no drops, this is the already identified synthetic publisher/timer knee, not
+a release-specific client-delivery failure. It must not be used to infer a 500k sustained source capability.
+
+This control therefore strengthens the conservative conclusion: upgrading the complete v5 -> v7 -> v8 stack does
+not reproduce a substantial C++ listener-delivery regression under the tested client-like recurring load. It also
+does not isolate the CXX wrapper alone, because each build changes the server-side publisher, Native SDK, and embedded
+QD together. The customer's production topology, full mostly-idle subscription universe, network, and legacy C API
+callback semantics remain outside this control.
+
+### Historical artifact availability
+
+The v5.0.0 source defaults to downloading Graal Native SDK 2.6.2 from the dxFeed JFrog Maven repository. The clean
+v5 build used for this control succeeded while that URL was still available. The historical CXX API build does not
+declare an equivalent GitHub-hosted 2.6.2 asset, so retirement of JFrog will break a fresh default v5 FetchContent
+configuration. The populated local build tree is only a cache and is not committed.
+
+For durable reproduction, preserve the original platform archive outside this repository and set the v5 project's
+`DXFEED_GRAAL_NATIVE_SDK_URL` environment variable to that controlled archive before configuring a fresh build.
+This availability issue does not affect the measurements already recorded here, but it does limit independent future
+reproduction unless the historical artifacts are migrated or archived.
+
 ## Conclusion and limitations
 
 The original v5-to-v7 controls show no end-to-end latency or delivery regression: `STREAM_FEED` delivery remains
 complete and v7 FEED median latency is lower. The v7-to-v8 follow-up also shows stable delivery and resources. Its
 v8 latency medians are slightly higher than the combined v7 controls, but the ranges overlap and temporal drift is
 visible, so the available observations do not establish a regression. None of the controls reproduces the
-customer's large latency spikes.
+customer's large latency spikes. The common delivery-only client additionally shows no monotonic CPU, RSS, callback,
+or throughput degradation from v5 through v8 at 150k, 375k, or the publisher-limited 500k profile.
 
 The experiments compare complete release stacks. They cannot attribute a measured difference specifically to the
 CXX API, Native SDK, or the QD updates from 3.342 to 3.347 and then 3.353. They run over loopback on one Windows host
@@ -164,3 +226,12 @@ Source results:
 - [v7 A2 FEED report](20260906T220817Z/REPORT.md)
 - [v7 A2 FEED environment](20260906T220817Z/environment.txt)
 - [v8 TimeAndSale snapshot-to-live report](20260906T213400Z/REPORT.md)
+- [v5 delivery-only report](20260907T133807Z/REPORT.md)
+- [v5 delivery-only environment](20260907T133807Z/environment.txt)
+- [v5 delivery-only run CSV](20260907T133807Z/delivery-runs.csv)
+- [v7 delivery-only report](20260907T135741Z/REPORT.md)
+- [v7 delivery-only environment](20260907T135741Z/environment.txt)
+- [v7 delivery-only run CSV](20260907T135741Z/delivery-runs.csv)
+- [v8 delivery-only report](20260907T134755Z/REPORT.md)
+- [v8 delivery-only environment](20260907T134755Z/environment.txt)
+- [v8 delivery-only run CSV](20260907T134755Z/delivery-runs.csv)

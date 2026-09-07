@@ -17,6 +17,12 @@ SDK 3.2.13 and QD 3.353. Use a separate build directory for every release becaus
 cached. The compiler, selected CXX API, its Native SDK, and QD dependency versions are recorded in each benchmark
 `environment.txt`.
 
+Historical v5.0.0 builds still resolve Graal Native SDK 2.6.2 from the dxFeed JFrog repository by default. That
+location is being retired, and the historical build does not declare an equivalent GitHub-hosted 2.6.2 asset.
+Preserve the original SDK archive if this control must remain reproducible. The v5 CMake project accepts an alternate
+archive through the `DXFEED_GRAAL_NATIVE_SDK_URL` environment variable; build directories that already populated
+FetchContent are only local caches and are not a durable replacement for the artifact.
+
 On Linux or macOS, use a single-configuration build:
 
 ```sh
@@ -259,6 +265,11 @@ minimal Graal `STREAM_FEED` delivery-only client, and the default legacy deliver
 and RSS consumed by the benchmark's correlation, windowing, and latency-sample retention from work performed by the
 C++ API delivery path itself. The 500,000-events/s point remains a publisher-capacity observation rather than a clean
 client limit.
+
+`tools/graal-delivery-release-control.conf` runs only the minimal Graal `STREAM_FEED` delivery client at the same
+three rates. Invoke it from separately configured v5.0.0, v7.0.0, and v8.0.0 build directories to compare release
+stacks without marker correlation or retained latency samples. Each run directory records the selected CXX API,
+Native SDK, and QD versions in `environment.txt`; do not combine rows until those identities have been verified.
 
 `tools/regional-fanout.conf` compares zero, one, four, and twenty-six active regional sources for both clients while
 holding the aggregate recurring rate at 150,000 events/s. This separates record-key routing and subscription fan-out
@@ -688,6 +699,9 @@ The repeated baseline/pre-knee/publisher-knee confirmation is in
 The full-versus-delivery-only resource comparison is in
 [`benchmark-results/20260907T123134Z/REPORT.md`](benchmark-results/20260907T123134Z/REPORT.md) and
 [`benchmark-results/API-DELIVERY-OVERHEAD.md`](benchmark-results/API-DELIVERY-OVERHEAD.md).
+The delivery-only release-stack control for v5.0.0, v7.0.0, and v8.0.0 is summarized in
+[`benchmark-results/SDK-VERSION-COMPARISON.md`](benchmark-results/SDK-VERSION-COMPARISON.md), with source reports
+under `20260907T133807Z`, `20260907T135741Z`, and `20260907T134755Z`, respectively.
 
 The legacy C API does not implement the newer client-side FEED conflation mechanism, delivers events to its callback
 one at a time, and does not support `TextMessage`, which the Graal benchmark uses as the exact per-publication
