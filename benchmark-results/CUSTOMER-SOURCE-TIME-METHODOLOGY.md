@@ -49,8 +49,9 @@ It is not an API-only measurement unless the other stages are controlled or inst
 3. **The legacy callback consumes only the first item.** Its callback receives `data_count`, but the supplied handler
    does not iterate over it. If one-event callbacks are an expected legacy invariant, the benchmark should record or
    assert that invariant.
-4. **Subscription equivalence is not demonstrated.** The legacy API internally expands several root-symbol
-   subscriptions to composite and A--Z regional records. The Graal side creates those symbols explicitly. Resolved
+4. **Subscription equivalence is not demonstrated.** The input file contains complete option contract symbols, not
+   underlying roots. For several event types, the legacy API internally expands each unsuffixed option symbol to
+   composite and A--Z regional records. The Graal side creates those regional event symbols explicitly. Resolved
    records, endpoint roles, and TimeAndSale HISTORY snapshot completion still need to be compared explicitly.
 5. **Live traffic is uncontrolled.** Runs made at different times do not hold rate, burstiness, symbol mix, snapshot
    traffic, or market state constant. Running both clients in one process also introduces shared-resource contention.
