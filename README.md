@@ -623,7 +623,10 @@ TimeAndSale HISTORY snapshot-to-live run on CXX API v8.0.0 is in
 [`benchmark-results/20260906T213400Z/REPORT.md`](benchmark-results/20260906T213400Z/REPORT.md). The controlled
 cardinality/depth result and its interpretation are in
 [`benchmark-results/20260906T230501Z/REPORT.md`](benchmark-results/20260906T230501Z/REPORT.md) and
-[`benchmark-results/TIME-SERIES-SCALING.md`](benchmark-results/TIME-SERIES-SCALING.md).
+[`benchmark-results/TIME-SERIES-SCALING.md`](benchmark-results/TIME-SERIES-SCALING.md). The in-measurement HISTORY
+experiment and its interpretation are in
+[`benchmark-results/20260907T095845Z/REPORT.md`](benchmark-results/20260907T095845Z/REPORT.md) and
+[`benchmark-results/TIME-SERIES-OVERLAP.md`](benchmark-results/TIME-SERIES-OVERLAP.md).
 
 The legacy C API does not implement the newer client-side FEED conflation mechanism, delivers events to its callback
 one at a time, and does not support `TextMessage`, which the Graal benchmark uses as the exact per-publication

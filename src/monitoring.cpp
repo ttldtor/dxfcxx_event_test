@@ -1878,9 +1878,8 @@ are not timestamp-based E2E latency measurements. Rates are medians across repet
 With the default legacy contract, the C API expands each base-symbol Quote, Trade, TradeETH, and Summary subscription
 into the composite plus 26 regional symbols. A task can publish a configured subset of those regional record keys
 while keeping its recurring event rate fixed. CPU uses both a one-core basis and a host-normalized basis; RSS is
-sampled by the cross-platform `ttldtor/Process` library during the measurement interval.
-
-        )";
+sampled by the cross-platform `ttldtor/Process` library during the measurement interval.)"
+               << "\n\n";
     }
 
     if (!timeSeriesScenarios.empty()) {
@@ -1933,14 +1932,14 @@ across repetitions; the event range is the minimum and maximum complete snapshot
 
         report << R"(
 
-Integrity requires every requested symbol to complete with `SNAPSHOT_END`, no duplicate indices, no live events
-before that symbol's snapshot completion, no clock anomalies, and at least one measured live TimeAndSale event.
+Integrity requires every requested symbol to complete with `SNAPSHOT_END` or `SNAPSHOT_SNIP`, no duplicate indices,
+no live events before that symbol's snapshot completion, no clock anomalies, and at least one measured live
+TimeAndSale event.
 `First live vs global completion` is negative when symbols that completed early start receiving live updates while
 snapshots for other symbols are still in progress; this is valid per-symbol snapshot-to-live overlap. `SNAPSHOT_SNIP`
 is reported separately because it is an expected bounded-history condition, not an integrity failure.
-CPU and RSS are sampled in the Graal client during the configured measurement interval, after the initial snapshot.
-
-        )";
+CPU and RSS are sampled in the Graal client during the configured measurement interval, after the initial snapshot.)"
+               << "\n\n";
     }
 
     if (!snapshotOverlapRows.empty()) {

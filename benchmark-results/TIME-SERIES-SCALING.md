@@ -80,9 +80,10 @@ without a dedicated control.
 
 ## Integrity and customer context
 
-All 15 benchmark runs completed successfully. Every requested symbol completed its snapshot with `SNAPSHOT_END`; there
-were no duplicate indices, no live events before the corresponding symbol's snapshot completion, and no clock
-anomalies. All bounded snapshots reported `SNAPSHOT_SNIP`, as expected. Client and server QD monitoring both reported
+All 15 benchmark runs completed successfully. Every requested symbol completed its snapshot with `SNAPSHOT_END` or
+`SNAPSHOT_SNIP`; there were no duplicate indices, no live events before the corresponding symbol's snapshot
+completion, and no clock anomalies. All bounded snapshots reported `SNAPSHOT_SNIP`, as expected. Client and server QD
+monitoring both reported
 `Dropped = 0`; server write and client read rates were closely matched, and maximum recorded buffers were 132 records
 on the client and one record on the server.
 

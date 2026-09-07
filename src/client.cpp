@@ -1639,6 +1639,10 @@ int main(int argc, char **argv) {
                                                                     : "after";
 
             flushPhase(phaseName, phaseEnd, phaseEndWall);
+
+            if (!interrupted.load() && phase == SnapshotPhase::DURING) {
+                snapshotTimedOut = true;
+            }
         } else {
             auto nextWindow = measurementStart + config.window;
 
@@ -1668,8 +1672,10 @@ int main(int argc, char **argv) {
             resources.finish(std::chrono::duration<double>(measurementFinish - measurementStart).count());
 
         if (snapshotTimedOut) {
-            std::cerr << std::format("TimeAndSale snapshot timeout after {} ms during measurement\n",
-                                     config.startupTimeout.count());
+            std::cerr << std::format(
+                "TimeAndSale snapshot did not complete before the measurement boundary or the {} ms startup "
+                "timeout\n",
+                config.startupTimeout.count());
         }
 
         control->removeSymbols(config.task);
